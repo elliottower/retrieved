@@ -15,14 +15,31 @@ and requires the suite to go red; if it passes with the guard removed, the secur
 untested and the release stops there. `packaging` builds the wheel and inspects what it ships.
 
 Then ask PyPI whether it would accept an upload, which costs nothing and is the check that
-catches a binding configured against the wrong workflow filename or environment:
+catches a binding configured against the wrong workflow filename or environment. The `binding`
+job mints a publishing token over OIDC and throws it away.
+
+The `release` environment admits tags matching `v*` and nothing else, so a dispatch on `main` is
+refused before the job starts — `Branch "main" is not allowed to deploy to release`. Pushing a
+throwaway `v*` tag is not the way around it either: that fires the push trigger, and `publish`
+runs on any tag, so the check would publish the release it was meant to precede.
+
+Widen the policy for the length of the check, and put it back:
 
 ```bash
-gh workflow run publish.yml --ref main    # runs the `binding` job alone
+gh api -X POST repos/elliottower/retrieved/environments/release/deployment-branch-policies \
+  -f name=main -f type=branch
+gh workflow run publish.yml --ref main
 gh run watch
+
+# then, immediately
+gh api repos/elliottower/retrieved/environments/release/deployment-branch-policies \
+  --jq '.branch_policies[] | select(.name=="main") | .id' |
+  xargs -I{} gh api -X DELETE \
+    repos/elliottower/retrieved/environments/release/deployment-branch-policies/{}
 ```
 
-The `binding` job mints a publishing token over OIDC and throws it away. A rejected mint on an
+Leaving `main` in the policy would let anything dispatchable from the default branch mint a real
+publishing token, which is what the tag-only rule exists to prevent. A rejected mint on an
 ordinary day is free; the same rejection halfway through a release costs the version number.
 
 ## The tag
