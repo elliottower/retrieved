@@ -10,9 +10,20 @@ uv run ruff check . && uv run ruff format --check .
 uv build && uv run twine check dist/*
 ```
 
-The CI job `denylist-can-fail` must be green on the commit being released. It removes the
-denylist and requires the suite to go red; if it passes with the guard removed, the security
-boundary is untested and the release stops there.
+Two CI jobs must be green on the commit being released. `denylist-can-fail` removes the denylist
+and requires the suite to go red; if it passes with the guard removed, the security boundary is
+untested and the release stops there. `packaging` builds the wheel and inspects what it ships.
+
+Then ask PyPI whether it would accept an upload, which costs nothing and is the check that
+catches a binding configured against the wrong workflow filename or environment:
+
+```bash
+gh workflow run publish.yml --ref main    # runs the `binding` job alone
+gh run watch
+```
+
+The `binding` job mints a publishing token over OIDC and throws it away. A rejected mint on an
+ordinary day is free; the same rejection halfway through a release costs the version number.
 
 ## The tag
 

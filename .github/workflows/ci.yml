@@ -22,8 +22,10 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --all-extras --dev
-      # COVERAGE_PROCESS_START is what lets coverage see the hook, which is tested the way it
-      # runs: as a subprocess. Without it that module reports 0% with nine tests against it.
+      # The floor is `fail_under` in pyproject.toml, so CI and a developer's own run check the
+      # same number. COVERAGE_PROCESS_START is what lets coverage see the hook, which is tested
+      # the way it runs -- as a subprocess. Without it that module reports 0% with nine tests
+      # against it.
       - run: uv run pytest -q --cov=retrieved --cov-report=term
         env:
           COVERAGE_PROCESS_START: pyproject.toml
@@ -39,8 +41,32 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
 
-  # The coverage floor lives in pyproject.toml as `fail_under`, so it is one number in one place
-  # rather than a threshold in CI that disagrees with the one developers run against.
+  # A version is consumed the moment it uploads to PyPI and can never be reused, so a wheel that
+  # fails inspection on release day costs the number. Building and checking it on every pull
+  # request means that is found on an ordinary day instead.
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+      - run: uv sync --dev
+      - run: uv build
+      - run: uv run twine check dist/*
+      - name: the wheel must carry the package and nothing else
+        run: |
+          python - <<'PY'
+          import pathlib, zipfile
+          wheel = next(pathlib.Path("dist").glob("*.whl"))
+          names = zipfile.ZipFile(wheel).namelist()
+          tops = {n.split("/")[0] for n in names}
+          # Version-agnostic: pinning the dist-info name here would break on the next bump.
+          extra = {t for t in tops if t != "retrieved" and not t.startswith("retrieved-")}
+          assert not extra, f"{wheel.name} also ships {sorted(extra)}"
+          assert "retrieved/refuse.py" in names, "the denylist is not in the wheel"
+          print(f"{wheel.name}: {len(names)} files, top level {sorted(tops)}")
+          PY
 
   # The denylist is the security boundary of this package. If these pass while the guard is
   # removed they are decoration, so the job removes it and requires the suite to go red.
