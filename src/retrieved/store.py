@@ -78,6 +78,10 @@ class Library:
             db.executescript(SCHEMA)
         return self
 
+    def connect(self) -> sqlite3.Connection:
+        """The index, for callers that need to read or pace against it."""
+        return self._connect()
+
     def _connect(self) -> sqlite3.Connection:
         self.root.mkdir(parents=True, exist_ok=True)
         return sqlite3.connect(self.index_path)
