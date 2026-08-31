@@ -71,8 +71,8 @@ that speaks on every fetch gets uninstalled. Refusals land in `skipped.jsonl`.
 
 Re-fetching a URL an agent chose is a server-side request forgery primitive: the agent names the
 target and this library makes the request, from a machine that may hold credentials. The denylist
-is the security boundary, and it is checked twice — once on the URL requested, once on the URL
-redirects actually reached.
+is the security boundary, and it is checked on the URL requested, on the URL redirects actually
+reached, and on wherever a browser navigated if one rendered the page.
 
 | refused | because |
 |---|---|
@@ -118,10 +118,11 @@ python -m playwright install chromium
 
 With a browser installed, a page that looks like a shell is rendered and the record says
 `javascript_executed: true` beside the engine and version. The browser navigates for itself, so
-where it landed is checked against the denylist too and recorded as the `final_url`. Without one, nothing changes and the
-record says `javascript_executed: false`, which is true. The extra is optional because a headless
-browser is a few hundred megabytes and a second per page, and a tool that demands one is a tool
-most people will not install.
+where it landed is checked against the denylist too and recorded as the record's `final_url`.
+
+Without a browser nothing changes and the record says `javascript_executed: false`, which is
+true. The extra is optional because a headless browser is a few hundred megabytes and a second
+per page, and a tool that demands one is a tool most people will not install.
 
 ## What it does not do
 
