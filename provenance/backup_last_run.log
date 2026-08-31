@@ -1,0 +1,5 @@
+  library : /Users/elliottower/.retrieved
+  bucket  : gs://citations-library-backup/retrieved
+  --- store
+If you are still experiencing problems, please reinstall the Google Cloud CLI using the instructions here:
+    https://cloud.google.com/sdk/docs/install
