@@ -22,7 +22,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --all-extras --dev
-      - run: uv run pytest -q
+      # COVERAGE_PROCESS_START is what lets coverage see the hook, which is tested the way it
+      # runs: as a subprocess. Without it that module reports 0% with nine tests against it.
+      - run: uv run pytest -q --cov=retrieved --cov-report=term
+        env:
+          COVERAGE_PROCESS_START: pyproject.toml
 
   lint:
     runs-on: ubuntu-latest
@@ -34,6 +38,9 @@ jobs:
       - run: uv sync --dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+
+  # The coverage floor lives in pyproject.toml as `fail_under`, so it is one number in one place
+  # rather than a threshold in CI that disagrees with the one developers run against.
 
   # The denylist is the security boundary of this package. If these pass while the guard is
   # removed they are decoration, so the job removes it and requires the suite to go red.
