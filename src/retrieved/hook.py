@@ -23,7 +23,43 @@ import sys
 MAX_STDIN = 4 * 1024 * 1024
 
 
+def _detach() -> int:
+    """Pass stdin to a background copy and return, so the session never waits on a fetch.
+
+    Everything here is best-effort by design. If the spawn fails there is no capture and no
+    error: a hook that cannot break a session is worth more than a hook that captures everything,
+    because the second one gets uninstalled the first time it hangs.
+    """
+    import subprocess  # noqa: PLC0415 - kept off the fast path's import cost
+
+    try:
+        payload = sys.stdin.read(MAX_STDIN)
+    except OSError:
+        return 0
+    try:
+        worker = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "retrieved.hook", "--capture"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        worker.stdin.write(payload.encode())
+        worker.stdin.close()
+    except (OSError, ValueError):
+        return 0
+    return 0
+
+
 def main() -> int:
+    # A PostToolUse hook runs synchronously: the session waits for it. Fetching inline therefore
+    # adds a second HTTP round-trip to every fetch the agent makes, and a hanging page stalls the
+    # editing session for the whole timeout. So the default is to hand the payload to a detached
+    # copy of this module and return immediately; `--capture` is that copy, doing the work with
+    # nobody waiting.
+    if "--capture" not in sys.argv:
+        return _detach()
+
     try:
         payload = json.loads(sys.stdin.read(MAX_STDIN))
     except (ValueError, OSError):

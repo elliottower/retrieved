@@ -4,7 +4,8 @@ import sys
 
 import pytest
 
-HOOK = [sys.executable, "-m", "retrieved.hook"]
+HOOK = [sys.executable, "-m", "retrieved.hook", "--capture"]
+DETACHING = [sys.executable, "-m", "retrieved.hook"]
 
 
 def run(payload, env, text=None):
@@ -78,3 +79,23 @@ def test_the_hook_stays_silent_on_success_and_failure_alike(env):
         {"tool_input": {}},
     ):
         assert run(payload, env).stdout == ""
+
+
+def test_the_detaching_hook_returns_before_the_fetch_finishes(env):
+    """A PostToolUse hook runs synchronously, so the session waits for whatever it does. The
+    default path must hand the work off and return, or a slow page stalls someone's editing."""
+    import time
+
+    started = time.monotonic()
+    out = subprocess.run(
+        DETACHING,
+        input=json.dumps({"tool_input": {"url": "https://example.com/"}}),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    elapsed = time.monotonic() - started
+    assert out.returncode == 0
+    assert out.stdout == ""
+    assert elapsed < 1.0, f"the hook blocked for {elapsed:.1f}s"
