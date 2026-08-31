@@ -17,6 +17,18 @@ repos:
         args: [--fix]
       - id: ruff-format
 
+  # The workflow auditor that caught an unpinned action in the sibling repository. A capture tool
+  # runs someone else's URLs; its CI should not also run someone else's unpinned action.
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.29.0
+    hooks:
+      - id: zizmor
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+
   - repo: local
     hooks:
       # A capture library holds third-party page content. Committing one publishes it.

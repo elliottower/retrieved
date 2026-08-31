@@ -1,0 +1,24 @@
+version: 2
+
+updates:
+  # Pinned action SHAs go stale silently: nothing in a checkout says the hash you pinned is three
+  # releases behind, and a pin is only as good as the review that set it.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps"
