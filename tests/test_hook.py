@@ -1,0 +1,80 @@
+import json
+import subprocess
+import sys
+
+import pytest
+
+HOOK = [sys.executable, "-m", "retrieved.hook"]
+
+
+def run(payload, env, text=None):
+    return subprocess.run(
+        HOOK,
+        input=text if text is not None else json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    import os
+
+    e = dict(os.environ)
+    e["RETRIEVED_HOME"] = str(tmp_path / ".retrieved")
+    e["PYTHONPATH"] = "src"
+    return e
+
+
+@pytest.mark.parametrize("text", ["", "not json", "[]", "null"])
+def test_the_hook_never_breaks_the_session(text, env):
+    """Constraint 1. A hook that raises interrupts someone's work, so it may only exit 0."""
+    out = run(None, env, text=text)
+    assert out.returncode == 0, out.stderr
+
+
+def test_a_payload_with_no_url_says_nothing(env):
+    out = run({"tool_name": "WebFetch", "tool_input": {}}, env)
+    assert out.returncode == 0
+    assert out.stdout == ""
+
+
+def test_a_refused_url_is_recorded_and_never_fetched(env, tmp_path):
+    """The metadata endpoint reaches the hook exactly the way a real one would."""
+    out = run(
+        {
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "http://169.254.169.254/latest/meta-data/"},
+            "session_id": "s1",
+        },
+        env,
+    )
+    assert out.returncode == 0
+    assert out.stdout == ""
+    skipped = (tmp_path / ".retrieved" / "skipped.jsonl").read_text()
+    assert "metadata" in skipped
+    assert not list((tmp_path / ".retrieved" / "retrievals").glob("*.yaml"))
+
+
+def test_an_unreachable_host_is_recorded_rather_than_raised(env, tmp_path):
+    out = run(
+        {
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "https://this-host-does-not-resolve.invalid/x"},
+        },
+        env,
+    )
+    assert out.returncode == 0
+    assert "fetch failed" in (tmp_path / ".retrieved" / "skipped.jsonl").read_text()
+
+
+def test_the_hook_stays_silent_on_success_and_failure_alike(env):
+    """Constraint 3. Anything printed here lands in the agent's context on every fetch."""
+    for payload in (
+        {"tool_input": {"url": "http://localhost/x"}},
+        {"tool_input": {"url": "https://nowhere.invalid/y"}},
+        {"tool_input": {}},
+    ):
+        assert run(payload, env).stdout == ""

@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --all-extras --dev
+      - run: uv run pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  # The denylist is the security boundary of this package. If these pass while the guard is
+  # removed they are decoration, so the job removes it and requires the suite to go red.
+  denylist-can-fail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --dev
+      - name: refusing nothing must break the tests
+        run: |
+          python - <<'PY'
+          import pathlib
+          p = pathlib.Path("src/retrieved/refuse.py")
+          s = p.read_text()
+          marker = "def check(url: str) -> None:"
+          body = s.index(marker) + len(marker)
+          end = s.index("def check_final")
+          p.write_text(s[:body] + '\n    """Guard removed by CI."""\n    return\n\n\n' + s[end:])
+          PY
+          if uv run pytest tests/test_refuse.py -q; then
+            echo "::error::the denylist tests pass with the guard removed"
+            exit 1
+          fi
+          echo "the denylist tests fail without the guard, as they must"

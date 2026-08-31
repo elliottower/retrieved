@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+.DS_Store
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# A library captured while developing. Never commit third-party page content.
+.retrieved/

@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "retrieved: keep the bytes an agent fetched"
+authors:
+  - family-names: Tower
+    given-names: Elliot
+    email: elliot@elliottower.ai
+    orcid: "https://orcid.org/0000-0001-7004-8884"
+type: software
+license: MIT
+repository-code: "https://github.com/elliottower/retrieved"
+version: "0.1.0"
+date-released: "2026-08-31"
+keywords:
+  - provenance
+  - reproducibility
+  - agents
+  - web archiving

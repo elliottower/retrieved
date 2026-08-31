@@ -1,0 +1,27 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # A capture library holds third-party page content. Committing one publishes it.
+      - id: no-captured-pages
+        name: no captured pages committed
+        entry: bash -c 'git diff --cached --name-only | grep -E "(^|/)\.retrieved/" && { echo "a capture library is staged; it holds third-party content"; exit 1; } || exit 0'
+        language: system
+        pass_filenames: false
