@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from retrieved import render
 from retrieved.refuse import Refused, check, check_final
 
 #: Sent so an operator can see who is asking and object. A capture tool with an anonymous
@@ -101,6 +102,20 @@ def fetch(url: str, *, timeout: float = 30.0, client: httpx.Client | None = None
         body = body[:MAX_BYTES]
 
     content_type = response.headers.get("content-type", "")
+
+    # A page built by script serves an empty shell to an HTTP client. Those bytes were really
+    # served, so storing them is not wrong -- but a text digest over an empty page answers
+    # nothing. Where a browser is installed and the page looks like a shell, the rendered
+    # document replaces it and the record says so. Where one is not, this is a no-op and the
+    # record still says javascript_executed: false, which is true.
+    rendering_method, javascript_executed = "httpx, no browser", False
+    if render.looks_like_a_shell(body, normalize(body, content_type), content_type):
+        if rendered := render.render(url, timeout=timeout):
+            body, rendering_method = rendered[0], rendered[1]
+            javascript_executed = True
+            truncated = len(body) > MAX_BYTES
+            if truncated:
+                body = body[:MAX_BYTES]
     headers = {k.lower(): v for k, v in response.headers.items() if k.lower() not in SECRET_HEADERS}
 
     return Retrieval(
@@ -113,10 +128,8 @@ def fetch(url: str, *, timeout: float = 30.0, client: httpx.Client | None = None
         bytes_sha256=hashlib.sha256(body).hexdigest(),
         text_sha256=hashlib.sha256(normalize(body, content_type).encode()).hexdigest(),
         extractor=f"retrieved.normalize/{'html' if 'html' in content_type.lower() else 'raw'}",
-        # No browser here, so nothing scripted ran. Recorded rather than assumed, because a page
-        # that is a JavaScript shell reads as an empty page and the two must be distinguishable.
-        rendering_method="httpx, no browser",
-        javascript_executed=False,
+        rendering_method=rendering_method,
+        javascript_executed=javascript_executed,
         response_headers=headers,
         body=body,
         truncated=truncated,

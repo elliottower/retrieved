@@ -84,6 +84,23 @@ redirects actually reached.
 `Set-Cookie` and `Authorization` are dropped before a record is written. Storing headers for a
 future WARC export is worth doing; storing them naively makes an evidence store a secrets store.
 
+## Pages built by JavaScript
+
+An HTTP client sees the shell a single-page app serves: a few hundred bytes, a script tag, no
+text. Those bytes really were served, so storing them is not wrong -- but a text digest over an
+empty page answers nothing.
+
+```bash
+pip install "retrieved[browser]"
+python -m playwright install chromium
+```
+
+With a browser installed, a page that looks like a shell is rendered and the record says
+`javascript_executed: true` beside the engine and version. Without one, nothing changes and the
+record says `javascript_executed: false`, which is true. The extra is optional because a headless
+browser is a few hundred megabytes and a second per page, and a tool that demands one is a tool
+most people will not install.
+
 ## What it does not do
 
 - **Judge whether a page supports a claim.** That is a semantic question and this is a
