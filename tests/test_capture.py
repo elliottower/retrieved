@@ -76,3 +76,70 @@ def test_the_record_states_that_no_javascript_ran():
 def test_normalize_leaves_non_html_alone_apart_from_whitespace():
     assert normalize(b"a\n\n  b", "text/plain") == "a b"
     assert normalize(b"<p>a</p>", "text/plain") == "<p>a</p>"
+
+
+def test_an_injected_client_is_the_only_transport_used(monkeypatch):
+    """A browser is a second request this library makes on its own, through neither the given
+    transport nor its proxy or trust settings. With playwright installed, every test here that
+    passes a mock client was reaching the live internet behind it."""
+
+    def forbidden(url, **kwargs):
+        raise AssertionError(f"a browser was launched for {url}")
+
+    monkeypatch.setattr("retrieved.capture.render.render", forbidden)
+    shell = b'<html><body><div id="root"></div><script src="/a.js"></script></body></html>'
+    with client_returning(body=shell) as c:
+        r = fetch("https://example.com/", client=c)
+    assert r.javascript_executed is False
+    assert r.rendering_method == "httpx, no browser"
+
+
+def test_a_shell_is_rendered_when_nothing_constrains_the_transport(monkeypatch):
+    """The other half: with no client injected, a page that looks like a shell does get one."""
+    real = httpx.Client
+
+    def offline(*args, **kwargs):
+        shell = b'<html><body><div id="root"></div><script src="/a.js"></script></body></html>'
+        kwargs["transport"] = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, content=shell, headers={"content-type": "text/html"}, request=request
+            )
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", offline)
+    monkeypatch.setattr(
+        "retrieved.capture.render.render",
+        lambda url, timeout=20.0: (
+            b"<html><body>the page after scripts</body></html>",
+            "fake",
+            url,
+        ),
+    )
+    r = fetch("https://example.com/")
+    assert r.javascript_executed is True
+    assert r.rendering_method == "fake"
+    assert normalize(r.body, "text/html") == "the page after scripts"
+
+
+def test_a_page_the_browser_moves_to_a_private_host_is_refused(monkeypatch):
+    """A page can move itself with `location =` after the HTTP response completes, which is a
+    redirect the client's chain never saw. The bytes came from wherever the browser ended up."""
+    real = httpx.Client
+
+    def offline(*args, **kwargs):
+        shell = b'<html><body><div id="root"></div><script src="/a.js"></script></body></html>'
+        kwargs["transport"] = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, content=shell, headers={"content-type": "text/html"}, request=request
+            )
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", offline)
+    monkeypatch.setattr(
+        "retrieved.capture.render.render",
+        lambda url, timeout=20.0: (b"<html>internal</html>", "fake", "http://169.254.169.254/"),
+    )
+    with pytest.raises(Refused):
+        fetch("https://example.com/")

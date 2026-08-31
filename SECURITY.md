@@ -10,6 +10,11 @@ from your machine, with your network position and whatever credentials that impl
 URL redirects actually reached, because a shortener resolving to a private host defeats any check
 made earlier.
 
+Where a browser renders the page it is checked a third time, against wherever the browser
+navigated. A page can move itself with `location =` after the HTTP response is complete, which is
+a redirect the HTTP client's chain never sees, and the rendered bytes come from the address it
+reached rather than the one that was requested.
+
 Refused: cloud metadata endpoints, loopback, RFC 1918, link-local, reserved and multicast
 addresses, hosts resolving to any of those, non-HTTP schemes, and URLs carrying a token,
 credential or identifier in the query string.

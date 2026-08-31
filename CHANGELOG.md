@@ -21,3 +21,10 @@ Initial work. Nothing published.
 - `robots.txt` is fetched through the denylist.
 - `Library.connect()` closes the handle when its block ends. `with sqlite3.connect(...)` commits
   and does not close.
+- A rendered page is checked against the denylist a third time, against wherever the browser
+  navigated. A page moving itself with `location =` after the response completes is a redirect
+  the HTTP client's chain never sees.
+- Passing a client to `fetch` keeps every request inside that transport, which means no browser.
+  A render is a request this library makes on its own and an injected client cannot mediate it.
+- The test suite refuses to open a connection, so a path that reaches the network is an error
+  rather than a slow test.
