@@ -84,6 +84,27 @@ redirects actually reached.
 `Set-Cookie` and `Authorization` are dropped before a record is written. Storing headers for a
 future WARC export is worth doing; storing them naively makes an evidence store a secrets store.
 
+## How often it asks
+
+Capturing only what an agent already read keeps this near one extra request per human-initiated
+fetch, which is browser-shaped rather than crawler-shaped. That ratio is not automatic — an agent
+researching a topic pulls thirty pages from one host in a minute — so the limits are enforced
+rather than assumed.
+
+| limit | value |
+|---|---|
+| gap between two requests to one host | 2s, or the host's `Crawl-delay` where it is longer |
+| a URL fetched again within | 15 minutes is not fetched again |
+| captures per session | 100 |
+| `robots.txt` | honored, cached for a day, and fetched through the denylist |
+
+The command is paced the same way the hook is. A rate limit one entry point honors and another
+ignores is not a rate limit, and a script in a loop uses the entry point that ignores it. Pass
+`--now` to capture something the limit would have held.
+
+Every refusal lands in `skipped.jsonl` with its reason, so a missing capture can be told apart
+from a page nobody fetched.
+
 ## Pages built by JavaScript
 
 An HTTP client sees the shell a single-page app serves: a few hundred bytes, a script tag, no

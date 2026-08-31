@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import subprocess
 import sys
 
@@ -99,3 +100,32 @@ def test_the_detaching_hook_returns_before_the_fetch_finishes(env):
     assert out.returncode == 0
     assert out.stdout == ""
     assert elapsed < 1.0, f"the hook blocked for {elapsed:.1f}s"
+
+
+def test_a_refused_url_never_spends_a_capture_against_the_session_cap(env, tmp_path):
+    """The denylist is asked before the rate limiter, and the order is not cosmetic. Asked the
+    other way, a session working against private hosts spends its whole 100-capture budget on
+    requests that were never going to be made, and then stops capturing the real pages."""
+    for octet in range(5):
+        run(
+            {
+                "tool_name": "WebFetch",
+                "tool_input": {"url": f"http://10.0.0.{octet}/admin"},
+                "session_id": "s1",
+            },
+            env,
+        )
+
+    db = sqlite3.connect(tmp_path / ".retrieved" / "index.db")
+    try:
+        exists = db.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'session_state'"
+        ).fetchone()
+        spent = (
+            db.execute("SELECT COALESCE(SUM(captures), 0) FROM session_state").fetchone()[0]
+            if exists
+            else 0
+        )
+    finally:
+        db.close()
+    assert spent == 0

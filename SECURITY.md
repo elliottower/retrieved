@@ -17,6 +17,11 @@ credential or identifier in the query string.
 `Set-Cookie`, `Cookie`, `Authorization` and `Proxy-Authorization` are dropped before a record is
 written.
 
+The rate limiter reads `robots.txt`, which is a second request to a URL built from the same
+agent-chosen host, so it goes through the denylist as well. Every caller checks the target first;
+the limiter checks its own regardless, because a request the boundary never sees is outside the
+boundary no matter who made it.
+
 CI runs a job that removes the guard and requires the test suite to go red. A denylist whose
 tests pass without it is decoration.
 
