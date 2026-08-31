@@ -10,12 +10,22 @@ from your machine, with your network position and whatever credentials that impl
 URL redirects actually reached, because a shortener resolving to a private host defeats any check
 made earlier.
 
+Where a browser renders the page it is checked a third time, against wherever the browser
+navigated. A page can move itself with `location =` after the HTTP response is complete, which is
+a redirect the HTTP client's chain never sees, and the rendered bytes come from the address it
+reached rather than the one that was requested.
+
 Refused: cloud metadata endpoints, loopback, RFC 1918, link-local, reserved and multicast
 addresses, hosts resolving to any of those, non-HTTP schemes, and URLs carrying a token,
 credential or identifier in the query string.
 
 `Set-Cookie`, `Cookie`, `Authorization` and `Proxy-Authorization` are dropped before a record is
 written.
+
+The rate limiter reads `robots.txt`, which is a second request to a URL built from the same
+agent-chosen host, so it goes through the denylist as well. Every caller checks the target first;
+the limiter checks its own regardless, because a request the boundary never sees is outside the
+boundary no matter who made it.
 
 CI runs a job that removes the guard and requires the test suite to go red. A denylist whose
 tests pass without it is decoration.

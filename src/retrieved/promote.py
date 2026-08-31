@@ -18,6 +18,7 @@ import pathlib
 import shutil
 
 import yaml
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from retrieved.identify import identify, slug_for
 from retrieved.store import Library
@@ -25,6 +26,28 @@ from retrieved.store import Library
 
 class CannotPromote(Exception):
     """Why this retrieval is not going into a bibliography."""
+
+
+class StoredRecord(BaseModel):
+    """A record read back off disk, which is a boundary and not an internal value.
+
+    The file was written by some version of this library, possibly an older one, and has been
+    sitting where anyone could edit or truncate it. Reading it as a plain dict made a missing key
+    a `KeyError` from whichever line happened to touch it first -- so one damaged file ended
+    `retrieved promotable` for the whole library rather than for itself.
+    """
+
+    # Unknown keys are a newer version's fields, not a corrupt record. Ignoring them lets a
+    # library written by a later release still be read by this one.
+    model_config = ConfigDict(extra="ignore")
+
+    final_url: str
+    fetched_at: str = ""
+    content_type: str = ""
+
+
+def _read(record_path: pathlib.Path) -> StoredRecord:
+    return StoredRecord.model_validate(yaml.safe_load(record_path.read_text()))
 
 
 def promote(
@@ -51,16 +74,19 @@ def promote(
         record_path = matches[0]
     digest = record_path.stem
 
-    retrieval = yaml.safe_load(record_path.read_text())
+    try:
+        retrieval = _read(record_path)
+    except ValidationError as invalid:
+        raise CannotPromote(f"{record_path.name} is not a readable record: {invalid}") from invalid
     blob = library.store / digest
     if not blob.is_file():
         raise CannotPromote(f"the bytes for {digest[:16]} are gone; only the record remains")
 
-    identifiers = identify(retrieval["final_url"], blob.read_bytes())
+    identifiers = identify(retrieval.final_url, blob.read_bytes())
     slug = slug_for(identifiers)
     if not slug:
         raise CannotPromote(
-            f"{retrieval['final_url']} carries no DOI or arXiv id. A record with neither is filed "
+            f"{retrieval.final_url} carries no DOI or arXiv id. A record with neither is filed "
             f"under a hash of its title and duplicates the moment anything cites it properly, so "
             f"this stays a retrieval."
         )
@@ -75,7 +101,7 @@ def promote(
     # is a library of links, and a link is what content addressing exists to replace.
     store = citations_home / "store"
     store.mkdir(parents=True, exist_ok=True)
-    suffix = ".pdf" if "pdf" in (retrieval.get("content_type") or "") else ".html"
+    suffix = ".pdf" if "pdf" in retrieval.content_type else ".html"
     shutil.copy2(blob, store / f"{slug}{suffix}")
 
     target.write_text(
@@ -91,11 +117,11 @@ def promote(
                 "venue": "",
                 "doi": identifiers.get("doi", ""),
                 "arxiv": identifiers.get("arxiv", ""),
-                "url": retrieval["final_url"],
+                "url": retrieval.final_url,
                 "local": f"store/{slug}{suffix}",
                 "sha256": digest,
                 "note": (
-                    f"Promoted from a retrieval captured {retrieval['fetched_at']}. Metadata is "
+                    f"Promoted from a retrieval captured {retrieval.fetched_at}. Metadata is "
                     f"from the page itself; run `citations resolve` to fill authors and year from "
                     f"a registry before citing it."
                 ),
@@ -108,14 +134,22 @@ def promote(
 
 
 def candidates(library: Library) -> list[tuple[str, str, str]]:
-    """Retrievals that could be promoted: digest, slug, url. Everything else stays put."""
+    """Retrievals that could be promoted: digest, slug, url. Everything else stays put.
+
+    A record this cannot read is skipped rather than raised on. Listing what is promotable is a
+    survey, and a survey that one damaged file can end answers nothing about the other nine
+    hundred; `promote` on that digest still says exactly what is wrong with it.
+    """
     found = []
     for record_path in sorted(library.retrievals.glob("*.yaml")):
         blob = library.store / record_path.stem
         if not blob.is_file():
             continue
-        retrieval = yaml.safe_load(record_path.read_text())
-        slug = slug_for(identify(retrieval["final_url"], blob.read_bytes()))
+        try:
+            retrieval = _read(record_path)
+        except ValidationError:
+            continue
+        slug = slug_for(identify(retrieval.final_url, blob.read_bytes()))
         if slug:
-            found.append((record_path.stem, slug, retrieval["final_url"]))
+            found.append((record_path.stem, slug, retrieval.final_url))
     return found

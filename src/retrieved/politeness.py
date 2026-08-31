@@ -22,6 +22,9 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from retrieved.refuse import Refused
+from retrieved.refuse import check as denylist
+
 #: Minimum gap between two requests to one host, regardless of what robots.txt permits. A server
 #: that publishes no Crawl-delay has not consented to being hit as fast as it can answer.
 MIN_HOST_INTERVAL = 2.0
@@ -80,12 +83,16 @@ def _robots_for(
     body, fetched_at = row or (None, None)
 
     if body is None or not fetched_at or _now() - fetched_at > ROBOTS_TTL:
+        robots_url = f"{scheme}://{host}/robots.txt"
         try:
-            response = httpx.get(
-                f"{scheme}://{host}/robots.txt", timeout=10.0, follow_redirects=True
-            )
+            # Its own request, to a URL built from a host an agent chose, so it goes through the
+            # same denylist as the capture it is pacing. Callers check the target first, but a
+            # request the security boundary never sees is a hole in the boundary regardless of
+            # who calls it -- and this one reached private hosts before any caller did.
+            denylist(robots_url)
+            response = httpx.get(robots_url, timeout=10.0, follow_redirects=True)
             body = response.text if response.status_code == 200 else ""
-        except httpx.HTTPError:
+        except (httpx.HTTPError, Refused):
             body = ""
         db.execute(
             "INSERT INTO host_state (host, robots_body, robots_at) VALUES (?,?,?) "

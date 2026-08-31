@@ -53,12 +53,17 @@ def looks_like_a_shell(body: bytes, text: str, content_type: str) -> bool:
     return bool(SHELL_MARKERS.search(body)) or (len(body) > 0 and len(text) < 100)
 
 
-def render(url: str, *, timeout: float = 20.0) -> tuple[bytes, str] | None:
-    """The page after its scripts have run, as (bytes, rendering_method). None if unavailable.
+def render(url: str, *, timeout: float = 20.0) -> tuple[bytes, str, str] | None:
+    """The page after its scripts have run, as (bytes, rendering_method, final_url).
 
-    Returns None rather than raising when no browser is installed or the render fails: a capture
-    without JavaScript is worse than one with it and far better than none, so this degrades to
-    the plain fetch rather than losing the page.
+    None if no browser is installed or the render fails: a capture without JavaScript is worse
+    than one with it and far better than none, so this degrades to the plain fetch rather than
+    losing the page.
+
+    The final URL is returned because the browser does its own navigating. A page can move itself
+    with `location =` after the HTTP response is complete, so where the browser ended up is not
+    something the HTTP client's redirect chain knows, and it is the address the stored bytes
+    actually came from. The caller checks it against the denylist.
     """
     try:
         from playwright.sync_api import sync_playwright  # noqa: PLC0415
@@ -72,10 +77,11 @@ def render(url: str, *, timeout: float = 20.0) -> tuple[bytes, str] | None:
                 page = browser.new_page()
                 page.goto(url, timeout=timeout * 1000, wait_until="networkidle")
                 html = page.content()
+                landed = page.url
                 version = browser.version
             finally:
                 browser.close()
     except Exception:  # noqa: BLE001 - any browser failure degrades to the plain fetch
         return None
 
-    return html.encode("utf-8"), f"playwright chromium {version}"
+    return html.encode("utf-8"), f"playwright chromium {version}", landed or url

@@ -83,7 +83,7 @@ def main() -> int:
     try:
         from retrieved import politeness
         from retrieved.capture import USER_AGENT, fetch
-        from retrieved.refuse import Refused
+        from retrieved.refuse import Refused, check
         from retrieved.store import Library
     except ImportError:
         return 0
@@ -96,7 +96,14 @@ def main() -> int:
     # Two different questions, asked in this order. The denylist answers what must never be
     # requested; politeness answers what should not be requested yet, again, or by this session.
     # Both refusals are recorded, because a store of successes alone cannot say why something is
-    # missing.
+    # missing. The order is not cosmetic: asked the other way, a session working against a local
+    # server spends its whole capture budget on URLs that were never going to be fetched.
+    try:
+        check(url)
+    except Refused as refusal:
+        library.skip(refusal.url, refusal.reason, session_id=session)
+        return 0
+
     try:
         with library.connect() as db:
             politeness.check(db, url, USER_AGENT, session_id=session)

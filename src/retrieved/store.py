@@ -19,10 +19,12 @@ thing that did not happen, and a store that records only successes reports the s
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
 import sqlite3
+from collections.abc import Iterator
 
 import yaml
 
@@ -74,17 +76,26 @@ class Library:
     def create(self) -> Library:
         self.store.mkdir(parents=True, exist_ok=True)
         self.retrievals.mkdir(parents=True, exist_ok=True)
-        with self._connect() as db:
+        with self.connect() as db:
             db.executescript(SCHEMA)
         return self
 
-    def connect(self) -> sqlite3.Connection:
-        """The index, for callers that need to read or pace against it."""
-        return self._connect()
+    @contextlib.contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        """The index, open for the length of one block.
 
-    def _connect(self) -> sqlite3.Connection:
+        Commits on the way out, and closes. `with sqlite3.connect(...) as db` does only the
+        first -- it is a transaction manager wearing the shape of a resource manager -- so code
+        that looks like it releases the handle keeps it until the object is collected. In a hook
+        that is a warning; on a filesystem that locks, it is a second process that cannot write.
+        """
         self.root.mkdir(parents=True, exist_ok=True)
-        return sqlite3.connect(self.index_path)
+        db = sqlite3.connect(self.index_path)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def write(
         self, retrieval: Retrieval, *, session_id: str = "", prompt: str = ""
@@ -119,7 +130,7 @@ class Library:
         path = self.retrievals / f"{retrieval.bytes_sha256}.yaml"
         path.write_text(yaml.safe_dump(record, sort_keys=False, allow_unicode=True))
 
-        with self._connect() as db:
+        with self.connect() as db:
             db.execute(
                 "INSERT OR REPLACE INTO retrievals VALUES (?,?,?,?,?,?,?)",
                 (
@@ -144,7 +155,7 @@ class Library:
 
     def history(self, url: str) -> list[tuple[str, str, str]]:
         """Every retrieval of a URL: when, and both digests. This is what an index buys."""
-        with self._connect() as db:
+        with self.connect() as db:
             return db.execute(
                 "SELECT fetched_at, bytes_sha256, text_sha256 FROM retrievals "
                 "WHERE url = ? OR final_url = ? ORDER BY fetched_at",
@@ -157,7 +168,7 @@ class Library:
         Reported on the text digest, never the bytes: byte divergence on a live page is close to
         universal and says nothing about whether the page still makes the same claim.
         """
-        with self._connect() as db:
+        with self.connect() as db:
             return db.execute(
                 "SELECT url, COUNT(*) AS fetches, COUNT(DISTINCT text_sha256) AS readings "
                 "FROM retrievals GROUP BY url HAVING readings > 1 ORDER BY readings DESC"

@@ -76,9 +76,13 @@ def normalize(body: bytes, content_type: str) -> str:
 def fetch(url: str, *, timeout: float = 30.0, client: httpx.Client | None = None) -> Retrieval:
     """Fetch `url`, or raise `Refused` if it must not be fetched.
 
-    Checked twice: before the request, and against the URL redirects actually reached. The second
-    is the one that catches a shortener pointing at a private host, and it is the check a first
-    version forgets.
+    Checked before the request, against the URL redirects actually reached, and again against
+    wherever a browser navigated if one rendered the page. The second is what catches a shortener
+    pointing at a private host, and it is the check a first version forgets; the third is what
+    catches a page that moves itself there after the response is complete.
+
+    Passing `client` keeps every request inside that transport, which also means no browser: a
+    render is a request this library makes on its own, and an injected client cannot mediate it.
     """
     check(url)
 
@@ -108,10 +112,20 @@ def fetch(url: str, *, timeout: float = 30.0, client: httpx.Client | None = None
     # nothing. Where a browser is installed and the page looks like a shell, the rendered
     # document replaces it and the record says so. Where one is not, this is a no-op and the
     # record still says javascript_executed: false, which is true.
+    #
+    # Never when the caller supplied a client. A browser is a second request this library makes
+    # on its own, through neither the given transport nor its proxy or trust settings, so
+    # honoring an injected client means making no request outside it.
     rendering_method, javascript_executed = "httpx, no browser", False
-    if render.looks_like_a_shell(body, normalize(body, content_type), content_type):
+    if owned and render.looks_like_a_shell(body, normalize(body, content_type), content_type):
         if rendered := render.render(url, timeout=timeout):
-            body, rendering_method = rendered[0], rendered[1]
+            body, rendering_method, landed = rendered
+            # The browser navigates for itself: a page can move with `location =` after the HTTP
+            # response completes, which is a redirect the client's chain never saw. These bytes
+            # came from wherever it ended up, so that is the address the denylist has to clear.
+            if landed != final_url:
+                check_final(url, landed)
+                final_url = landed
             javascript_executed = True
             truncated = len(body) > MAX_BYTES
             if truncated:

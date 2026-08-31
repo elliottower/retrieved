@@ -18,7 +18,8 @@ def db(monkeypatch):
     )
     # No network in these tests: robots.txt is whatever the test says it is.
     monkeypatch.setattr(politeness, "_robots_for", lambda *a, **k: None)
-    return connection
+    yield connection
+    connection.close()
 
 
 def test_a_second_request_to_one_host_too_soon_is_declined(db):
@@ -107,3 +108,22 @@ def test_a_host_with_no_robots_is_still_paced(db):
     record(db, "https://example.com/a")
     with pytest.raises(Declined):
         check(db, "https://example.com/b", AGENT)
+
+
+def test_the_robots_fetch_goes_through_the_denylist(monkeypatch):
+    """The rate limiter makes its own request, to a URL built from a host an agent named. It
+    reached private addresses before any caller's denylist check did, so it checks its own."""
+
+    def forbidden(url, **kwargs):
+        raise AssertionError(f"the rate limiter requested {url}")
+
+    monkeypatch.setattr(politeness.httpx, "get", forbidden)
+
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(politeness.SCHEMA)
+        assert politeness._robots_for(connection, "10.0.0.1", "http") is None
+        assert politeness._robots_for(connection, "169.254.169.254", "http") is None
+        assert politeness._robots_for(connection, "localhost", "http") is None
+    finally:
+        connection.close()

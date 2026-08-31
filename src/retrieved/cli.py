@@ -1,14 +1,15 @@
-"""The commands.
-
-Four, each answering one question:
+"""The commands, each answering one question.
 
     retrieved capture <url>   keep what is at this URL now
     retrieved verify          do the stored bytes still hash to what the record says?
     retrieved status          what is captured, what drifted, what was declined
+    retrieved history <url>   every capture of one URL, and where the reading changed
+    retrieved promotable      which captures name a work a bibliography could hold
+    retrieved promote <d>     put one of them into a citation library
     retrieved hook            the configuration that captures fetches automatically
 
 `verify` checks the store against itself, not the store against the web. Whether a page still
-says what it said is `status`, and it is only answerable for URLs captured more than once --
+says what it said is `history`, and it is only answerable for URLs captured more than once --
 which is the honest limit of a tool that refuses to re-crawl on a timer.
 """
 
@@ -19,9 +20,11 @@ import hashlib
 import json
 import pathlib
 
-from retrieved.capture import fetch
+from retrieved import politeness
+from retrieved.capture import USER_AGENT, fetch
 from retrieved.promote import CannotPromote, candidates, promote
 from retrieved.refuse import Refused
+from retrieved.refuse import check as denylist
 from retrieved.store import Library
 
 HOOK_CONFIG = {
@@ -36,14 +39,44 @@ HOOK_CONFIG = {
 }
 
 
+def _refused(library: Library, refusal: Refused) -> int:
+    library.skip(refusal.url, refusal.reason)
+    print(f"  refused  {refusal.url}\n           {refusal.reason}")
+    return 1
+
+
 def cmd_capture(args: argparse.Namespace) -> int:
-    library = Library.resolve()
+    library = Library.resolve().create()
+
+    # The denylist first, and pacing second. They answer different questions -- what must never be
+    # requested, then what should not be requested yet -- and in the other order a URL that will
+    # never be fetched still spends a slot against the session cap. A session working against a
+    # local server would exhaust its budget on requests that never happened.
+    try:
+        denylist(args.url)
+    except Refused as refusal:
+        return _refused(library, refusal)
+
+    # The same pacing the hook applies. A rate limit that depends on which entry point was used
+    # is not a rate limit: a script calling `retrieved capture` in a loop is exactly the burst
+    # these limits exist to prevent, and it would have gone straight past them.
+    if not args.now:
+        try:
+            with library.connect() as db:
+                politeness.check(db, args.url, USER_AGENT)
+        except politeness.Declined as declined:
+            library.skip(declined.url, declined.reason)
+            print(f"  declined {declined.url}\n           {declined.reason}")
+            print("           --now captures anyway")
+            return 1
+    with library.connect() as db:
+        politeness.record(db, args.url)
+
+    # Checked again inside `fetch`, against the URL redirects actually reached.
     try:
         retrieval = fetch(args.url)
     except Refused as refusal:
-        library.skip(refusal.url, refusal.reason)
-        print(f"  refused  {refusal.url}\n           {refusal.reason}")
-        return 1
+        return _refused(library, refusal)
     path = library.write(retrieval, prompt=args.prompt or "")
     print(f"  captured {retrieval.final_url}")
     print(f"    status {retrieval.http_status}   {retrieval.bytes_len} bytes")
@@ -105,6 +138,33 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_history(args: argparse.Namespace) -> int:
+    """Every capture of one URL, marking the fetches where the reading changed.
+
+    Reported on the text digest. Bytes differ between almost any two fetches of a live page --
+    session ids, ad slots, a timestamp in a footer -- so a list of byte digests would mark every
+    row as changed and mean nothing by it.
+    """
+    library = Library.resolve()
+    rows = library.history(args.url)
+    if not rows:
+        print(f"  never captured  {args.url}")
+        return 2
+
+    previous = ""
+    for fetched_at, byte_digest, text_digest in rows:
+        mark = "changed" if previous and text_digest != previous else ""
+        print(f"  {fetched_at}  {byte_digest[:12]}  {text_digest[:12]}  {mark}".rstrip())
+        previous = text_digest
+
+    readings = len({row[2] for row in rows})
+    if len(rows) == 1:
+        print("\n  one capture, which cannot show drift; that needs a second")
+    else:
+        print(f"\n  {len(rows)} captures, {readings} distinct readings")
+    return 0
+
+
 def cmd_promotable(args: argparse.Namespace) -> int:
     """What could go into a bibliography. Nothing here has, or will without being asked."""
     library = Library.resolve()
@@ -148,12 +208,20 @@ def main(argv: list[str] | None = None) -> int:
     capture = sub.add_parser("capture", help="keep what is at this URL now")
     capture.add_argument("url")
     capture.add_argument("--prompt", help="what was being asked of the page")
+    capture.add_argument(
+        "--now", action="store_true", help="capture without waiting out the rate limit"
+    )
     capture.set_defaults(fn=cmd_capture)
 
     sub.add_parser("verify", help="do the stored bytes still hash to their names?").set_defaults(
         fn=cmd_verify
     )
     sub.add_parser("status", help="what is captured, drifted, declined").set_defaults(fn=cmd_status)
+
+    history = sub.add_parser("history", help="every capture of one URL, and where it changed")
+    history.add_argument("url")
+    history.set_defaults(fn=cmd_history)
+
     sub.add_parser(
         "promotable", help="which captures name a work, and could join a bibliography"
     ).set_defaults(fn=cmd_promotable)
