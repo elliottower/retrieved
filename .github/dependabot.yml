@@ -6,19 +6,25 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    cooldown:
+      # Do not propose a release in its first week: that is the window in which a compromised
+      # version is most likely to still be live.
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
     commit-message:
-      prefix: "ci"
+      prefix: ci
 
   - package-ecosystem: uv
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    cooldown:
+      default-days: 7
     groups:
-      python:
-        patterns: ["*"]
+      dev-tooling:
+        dependency-type: development
     commit-message:
-      prefix: "deps"
+      prefix: deps
