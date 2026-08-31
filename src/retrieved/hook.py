@@ -81,7 +81,8 @@ def main() -> int:
     # missing a dependency must produce a silent no-op rather than an exception in someone's
     # editing session. Everything above this line runs on the standard library alone.
     try:
-        from retrieved.capture import fetch
+        from retrieved import politeness
+        from retrieved.capture import USER_AGENT, fetch
         from retrieved.refuse import Refused
         from retrieved.store import Library
     except ImportError:
@@ -90,6 +91,31 @@ def main() -> int:
     session = payload.get("session_id") or ""
     cwd = payload.get("cwd")
     library = Library.resolve(pathlib.Path(cwd) if cwd else None)
+    library.create()
+
+    # Two different questions, asked in this order. The denylist answers what must never be
+    # requested; politeness answers what should not be requested yet, again, or by this session.
+    # Both refusals are recorded, because a store of successes alone cannot say why something is
+    # missing.
+    try:
+        with library.connect() as db:
+            politeness.check(db, url, USER_AGENT, session_id=session)
+    except politeness.Declined as declined:
+        library.skip(declined.url, declined.reason, session_id=session)
+        return 0
+    except Exception as error:  # noqa: BLE001 - pacing must never break a capture
+        # Proceed unpaced rather than not at all, and say so. A rate limiter that failed is a
+        # different fact from one that declined, and swallowing it silently would leave a request
+        # in the log that nothing explains.
+        library.skip(
+            url, f"pacing unavailable, fetched anyway: {type(error).__name__}", session_id=session
+        )
+
+    try:
+        with library.connect() as db:
+            politeness.record(db, url, session_id=session)
+    except Exception as error:  # noqa: BLE001
+        library.skip(url, f"pacing not recorded: {type(error).__name__}", session_id=session)
 
     try:
         retrieval = fetch(url)
