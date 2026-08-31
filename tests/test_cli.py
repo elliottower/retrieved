@@ -213,6 +213,15 @@ def test_history_shows_each_capture_and_marks_a_changed_reading(home, monkeypatc
     out = capsys.readouterr().out
     assert "2 captures, 2 distinct readings" in out
     assert "changed" in out
+    assert not any(line.rstrip() != line for line in out.splitlines())
+
+
+def test_history_of_a_single_capture_says_drift_is_not_measurable(home, monkeypatch, capsys):
+    serve(monkeypatch)
+    cli.main(["capture", "https://example.com/p"])
+    capsys.readouterr()
+    assert cli.main(["history", "https://example.com/p"]) == 0
+    assert "one capture, which cannot show drift" in capsys.readouterr().out
 
 
 def test_history_of_a_url_never_captured_says_so(home, monkeypatch, capsys):

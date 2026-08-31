@@ -154,13 +154,14 @@ def cmd_history(args: argparse.Namespace) -> int:
     previous = ""
     for fetched_at, byte_digest, text_digest in rows:
         mark = "changed" if previous and text_digest != previous else ""
-        print(f"  {fetched_at}  {byte_digest[:12]}  {text_digest[:12]}  {mark}")
+        print(f"  {fetched_at}  {byte_digest[:12]}  {text_digest[:12]}  {mark}".rstrip())
         previous = text_digest
 
     readings = len({row[2] for row in rows})
-    print(f"\n  {len(rows)} captures, {readings} distinct readings")
     if len(rows) == 1:
-        print("  one capture cannot show drift; that needs a second")
+        print("\n  one capture, which cannot show drift; that needs a second")
+    else:
+        print(f"\n  {len(rows)} captures, {readings} distinct readings")
     return 0
 
 
