@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Daily backup of the library to gs://citations-library-backup/retrieved.
+
+  launchd rather than cron: cron drops a run the machine slept through and says nothing, and a
+  laptop is asleep at 4am most nights. launchd runs a missed StartCalendarInterval job at the
+  next wake, which is the behaviour a backup needs.
+
+  Install:
+      cp scripts/com.elliottower.retrieved-backup.plist ~/Library/LaunchAgents/
+      launchctl load ~/Library/LaunchAgents/com.elliottower.retrieved-backup.plist
+
+  Check it is registered, and when it last ran:
+      launchctl list | grep retrieved-backup
+      tail ~/Documents/GitHub/retrieved/provenance/backup_log.jsonl
+
+  Remove:
+      launchctl unload ~/Library/LaunchAgents/com.elliottower.retrieved-backup.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.elliottower.retrieved-backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/elliottower/Documents/GitHub/retrieved/scripts/backup_to_gcs.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>4</integer>
+        <key>Minute</key><integer>30</integer>
+    </dict>
+
+    <!-- The script finds the library from its own path, so the working directory only has to
+         exist. gcloud comes from /usr/local/bin, which a launchd job does not inherit. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/elliottower/Documents/GitHub/retrieved</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Not RunAtLoad: a login should not start a 5 GB sync. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/elliottower/Documents/GitHub/retrieved/provenance/backup_last_run.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/elliottower/Documents/GitHub/retrieved/provenance/backup_last_run.log</string>
+</dict>
+</plist>

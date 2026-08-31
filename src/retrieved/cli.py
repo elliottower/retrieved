@@ -17,8 +17,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import pathlib
 
 from retrieved.capture import fetch
+from retrieved.promote import CannotPromote, candidates, promote
 from retrieved.refuse import Refused
 from retrieved.store import Library
 
@@ -103,6 +105,34 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_promotable(args: argparse.Namespace) -> int:
+    """What could go into a bibliography. Nothing here has, or will without being asked."""
+    library = Library.resolve()
+    found = candidates(library)
+    if not found:
+        print("  nothing captured carries a DOI or an arXiv id")
+        return 0
+    for digest, slug, url in found:
+        print(f"  {slug:<26}{url[:58]}\n  {'':<26}{digest[:16]}")
+    total = len(list(library.retrievals.glob("*.yaml")))
+    print(f"\n  {len(found)} of {total} retrievals name a work.")
+    print("  retrieved promote <digest> --into <citations library>")
+    return 0
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    library = Library.resolve()
+    home = pathlib.Path(args.into).expanduser().resolve()
+    try:
+        path = promote(library, args.digest, home, force=args.force)
+    except CannotPromote as refusal:
+        print(f"  {refusal}")
+        return 1
+    print(f"  wrote {path.relative_to(home)} in {home}")
+    print("  authors and year are blank: run `citations resolve` before citing it")
+    return 0
+
+
 def cmd_hook(args: argparse.Namespace) -> int:
     print(json.dumps(HOOK_CONFIG, indent=2))
     print("\n  Add the PostToolUse entry to ~/.claude/settings.json.")
@@ -124,6 +154,16 @@ def main(argv: list[str] | None = None) -> int:
         fn=cmd_verify
     )
     sub.add_parser("status", help="what is captured, drifted, declined").set_defaults(fn=cmd_status)
+    sub.add_parser(
+        "promotable", help="which captures name a work, and could join a bibliography"
+    ).set_defaults(fn=cmd_promotable)
+
+    prom = sub.add_parser("promote", help="put one capture into a citation library")
+    prom.add_argument("digest")
+    prom.add_argument("--into", required=True, help="the citation library to write into")
+    prom.add_argument("--force", action="store_true", help="overwrite an existing record")
+    prom.set_defaults(fn=cmd_promote)
+
     sub.add_parser("hook", help="print the hook configuration").set_defaults(fn=cmd_hook)
 
     args = parser.parse_args(argv)
