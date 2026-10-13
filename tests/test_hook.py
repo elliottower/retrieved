@@ -293,7 +293,7 @@ def test_a_payload_with_no_tool_response_at_all_still_captures(home, monkeypatch
 
 
 def test_a_check_that_raises_costs_neither_the_capture_nor_the_silence(home, monkeypatch, capsys):
-    def broken(answer, retrieval):
+    def broken(answer, retrieval, **about):
         raise RuntimeError("a defect in the check")
 
     monkeypatch.setattr("retrieved.answer.check", broken)
@@ -449,3 +449,205 @@ def test_the_report_resolves_the_library_a_capture_from_the_same_directory_write
     nested.mkdir(parents=True)
     assert flags.library_root(nested) == Library.resolve(nested).root
     assert flags.library_root(nested) == (tmp_path / ".retrieved").resolve()
+
+
+def test_the_prompt_reaches_the_check_so_its_own_words_are_not_held_against_the_page(
+    home, monkeypatch, capsys
+):
+    payload = fetched("https://example.com/ferry", "")
+    asked = 'Does the page say "tickets are sold online and must be reserved a week ahead"?'
+    payload["tool_input"]["prompt"] = asked
+    payload["tool_response"]["result"] = (
+        'No, it does not say "tickets are sold online and must be reserved a week ahead".'
+    )
+    assert capture_in_process(monkeypatch, payload) == 0
+    block = the_record(home)["answer_check"]
+    assert block["status"] == "not_run"
+    assert "words of the prompt" in block["reason"]
+    assert not (home / "flags.jsonl").exists()
+
+
+def counting_fetches(monkeypatch):
+    """How many requests the worker went on to make, counted where it would make them."""
+    made = []
+    real = capture.fetch
+
+    def counted(url, **kwargs):
+        made.append(url)
+        return real(url, **kwargs)
+
+    monkeypatch.setattr(capture, "fetch", counted)
+    return made
+
+
+def lines_of(path):
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_a_declined_url_is_checked_against_the_copy_the_library_holds(home, monkeypatch, env):
+    capture_in_process(monkeypatch, fetched("https://example.com/ferry", ON_THE_PAGE, "s1"))
+    first = the_record(home)
+    assert first["answer_check"]["status"] == "found"
+
+    # The same URL moments later, which the rate limiter declines, with an answer that quotes
+    # what the page does not say.
+    capture_in_process(monkeypatch, fetched("https://example.com/ferry", NOT_ON_THE_PAGE, "s2"))
+    made = counting_fetches(monkeypatch)
+    capture_in_process(monkeypatch, fetched("https://example.com/ferry", NOT_ON_THE_PAGE, "s2"))
+    assert made == []
+
+    declined = [line for line in lines_of(home / "skipped.jsonl") if "ago" in line["reason"]]
+    assert len(declined) == 2
+
+    # The earlier fetch's own record still says what it said about the earlier answer.
+    assert the_record(home) == first
+
+    passage = "tickets are sold online and must be reserved a week ahead"
+    checks = lines_of(home / "answer_checks.jsonl")
+    assert len(checks) == 2
+    for check in checks:
+        assert check["session_id"] == "s2"
+        assert check["url"] == "https://example.com/ferry"
+        assert check["bytes_sha256"] == first["bytes_sha256"]
+        assert check["copy_fetched_at"] == first["fetched_at"]
+        assert "ago" in check["not_fetched_because"]
+        assert check["answer_check"]["status"] == "not_found"
+        assert check["answer_check"]["not_found"] == [passage]
+        assert check["answer_check"]["checked_against"] == "retrieved.normalize/html"
+        assert NOT_ON_THE_PAGE not in json.dumps(check)
+
+    flag = lines_of(home / "flags.jsonl")[0]
+    assert flag["copy_fetched_at"] == first["fetched_at"]
+    assert flag["bytes_sha256"] == first["bytes_sha256"]
+
+    told = report(env, {"session_id": "s2", "hook_event_name": "PostToolUse"})
+    note = json.loads(told.stdout)["hookSpecificOutput"]["additionalContext"].split("\n")[0]
+    assert note == (
+        "retrieved: 1 passage the fetch answer quoted from https://example.com/ferry is not in "
+        f"the copy of the page this library holds, fetched {first['fetched_at']}: "
+        f'"{passage}". Read the page before quoting it. The page was not fetched again for '
+        f"this check: the copy is from {first['fetched_at']}, and it can differ from what the "
+        "fetch tool read."
+    )
+    assert flags.INDEPENDENT not in told.stdout
+
+
+def test_a_declined_url_whose_answer_matches_the_stored_copy_is_recorded_and_raises_nothing(
+    home, monkeypatch
+):
+    capture_in_process(monkeypatch, fetched("https://example.com/ferry", NOT_ON_THE_PAGE))
+    assert len(lines_of(home / "flags.jsonl")) == 1
+    capture_in_process(monkeypatch, fetched("https://example.com/ferry", ON_THE_PAGE))
+    (check,) = lines_of(home / "answer_checks.jsonl")
+    assert (check["answer_check"]["status"], check["answer_check"]["found"]) == ("found", 1)
+    assert len(lines_of(home / "flags.jsonl")) == 1
+    assert the_record(home)["answer_check"]["status"] == "not_found"
+
+
+def test_a_declined_url_the_library_holds_no_copy_of_is_skipped_and_nothing_else(home, monkeypatch):
+    capture_in_process(monkeypatch, fetched("https://example.com/ferry", ON_THE_PAGE))
+    # Another page of the same host, inside the minimum interval between two requests to it.
+    made = counting_fetches(monkeypatch)
+    capture_in_process(monkeypatch, fetched("https://example.com/fares", NOT_ON_THE_PAGE))
+    assert made == []
+    skipped = lines_of(home / "skipped.jsonl")
+    assert [line["url"] for line in skipped] == ["https://example.com/fares"]
+    assert "minimum interval" in skipped[0]["reason"]
+    assert not (home / "answer_checks.jsonl").exists()
+    assert not (home / "flags.jsonl").exists()
+
+
+def test_a_stored_copy_with_almost_no_text_is_not_flagged_a_second_time(home, monkeypatch):
+    said = "The ferry sails twice a day and takes forty minutes. " * 20
+    for _ in range(2):
+        capture_in_process(
+            monkeypatch, fetched("https://example.com/ferry", said), body=WALL, status=403
+        )
+    (check,) = lines_of(home / "answer_checks.jsonl")
+    assert check["answer_check"]["status"] == "not_run"
+    assert check["answer_check"]["answer_without_page_text"] is True
+    assert len(lines_of(home / "flags.jsonl")) == 1
+
+
+def test_a_stored_copy_that_cannot_be_checked_costs_nothing_but_a_line(home, monkeypatch, capsys):
+    capture_in_process(monkeypatch, fetched("https://example.com/ferry", ON_THE_PAGE))
+
+    def broken(self, url):
+        raise RuntimeError("a defect in the lookup")
+
+    monkeypatch.setattr(Library, "latest", broken)
+    assert capture_in_process(monkeypatch, fetched("https://example.com/ferry", ON_THE_PAGE)) == 0
+    assert capsys.readouterr() == ("", "")
+    reasons = [line["reason"] for line in lines_of(home / "skipped.jsonl")]
+    assert reasons[-1] == "stored copy not checked: RuntimeError"
+    assert not (home / "answer_checks.jsonl").exists()
+
+
+def by_a_subagent(payload, agent_id):
+    return {**payload, "agent_id": agent_id, "agent_type": "Explore"}
+
+
+def test_a_subagents_flag_is_told_to_that_subagent_and_to_no_other(home, monkeypatch, env):
+    payload = by_a_subagent(fetched("https://example.com/ferry", NOT_ON_THE_PAGE, "s1"), "a1")
+    capture_in_process(monkeypatch, payload)
+    (flag,) = lines_of(home / "flags.jsonl")
+    assert (flag["session_id"], flag["agent_id"]) == ("s1", "a1")
+
+    sibling = report(env, {"session_id": "s1", "agent_id": "a2"})
+    assert (sibling.returncode, sibling.stdout, sibling.stderr) == (0, "", "")
+
+    own = report(env, {"session_id": "s1", "agent_id": "a1"})
+    note = json.loads(own.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "tickets are sold online" in note
+    assert flags.BY_A_SUBAGENT not in note
+
+    main = report(env, {"session_id": "s1"})
+    assert (main.returncode, main.stdout, main.stderr) == (0, "", "")
+
+
+def test_the_main_agent_is_told_of_a_subagents_flag_and_that_a_subagent_fetched(
+    home, monkeypatch, env
+):
+    payload = by_a_subagent(fetched("https://example.com/ferry", NOT_ON_THE_PAGE, "s1"), "a1")
+    capture_in_process(monkeypatch, payload)
+
+    main = report(env, {"session_id": "s1"})
+    note = json.loads(main.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "tickets are sold online" in note
+    assert note.endswith(f"{flags.INDEPENDENT} {flags.BY_A_SUBAGENT}")
+
+    late = report(env, {"session_id": "s1", "agent_id": "a1"})
+    assert (late.returncode, late.stdout, late.stderr) == (0, "", "")
+
+
+def test_the_main_agents_own_flag_is_not_told_to_a_subagent(home, monkeypatch, env):
+    capture_in_process(monkeypatch, fetched("https://example.com/ferry", NOT_ON_THE_PAGE, "s1"))
+    (flag,) = lines_of(home / "flags.jsonl")
+    assert flag["agent_id"] == ""
+
+    subagent = report(env, {"session_id": "s1", "agent_id": "a1"})
+    assert (subagent.returncode, subagent.stdout, subagent.stderr) == (0, "", "")
+
+    main = report(env, {"session_id": "s1"})
+    note = json.loads(main.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "tickets are sold online" in note
+    assert flags.BY_A_SUBAGENT not in note
+
+
+def test_a_flag_written_before_agents_were_recorded_is_the_main_agents(home):
+    home.mkdir()
+    old = {"session_id": "s1", "url": "https://example.com/x", "not_found": ["a passage" * 5]}
+    (home / "flags.jsonl").write_text(json.dumps(old) + "\n")
+    assert flags.undelivered(home, "s1", "a1") == []
+    assert flags.undelivered(home, "s1") == [flags.note(old)]
+
+
+@pytest.mark.parametrize("copy_fetched_at", [None, "", "yesterday", 7, "<b>now</b>"])
+def test_a_copy_time_that_is_not_a_time_never_reaches_a_note(copy_fetched_at):
+    flag = {
+        "url": "https://example.com/x",
+        "not_found": ["p" * 40],
+        "copy_fetched_at": copy_fetched_at,
+    }
+    assert flags.note(flag).endswith(flags.INDEPENDENT)
+    assert "the page as retrieved" in flags.note(flag)

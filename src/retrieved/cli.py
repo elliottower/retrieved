@@ -141,6 +141,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"  answers   {len(flags.raised(library.root))} flagged   {ran} checked   "
         f"{not_run} not run   {absent} with no check recorded   (see flags.jsonl)"
     )
+    # Counted apart. The line above counts records, one to a fetch; these are answers about
+    # pages that were not fetched again, and adding them in would count some pages twice.
+    stored_ran, stored_not_run = library.stored_checks()
+    print(
+        f"            {stored_ran} more checked against a stored copy   "
+        f"{stored_not_run} not run   (see answer_checks.jsonl)"
+    )
     if drifted:
         print(f"\n  {len(drifted)} URLs read differently on a later fetch:")
         for url, fetches, readings in drifted[:10]:

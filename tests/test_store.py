@@ -141,6 +141,16 @@ def test_a_flag_is_one_appended_line_holding_what_the_note_needs(tmp_path):
     assert first["not_found"] == ["now keeps some ninety thousand photographs,"]
     assert first["answer_without_page_text"] is False
     assert first["answer_chars"] == len(QUOTED_WRONG)
+    # A new fetch by the main agent: no agent, and no copy to give the time of.
+    assert (first["agent_id"], first["copy_fetched_at"]) == ("", None)
+
+
+def test_a_flag_records_the_agent_and_for_a_stored_copy_when_it_was_fetched(tmp_path):
+    library = Library(tmp_path / ".retrieved").create()
+    r = a_retrieval(ARTICLE)
+    library.flag(r, check(QUOTED_WRONG, r), session_id="s1", agent_id="a1", stored_copy=True)
+    (flag,) = (json.loads(line) for line in library.flags_path.read_text().splitlines())
+    assert (flag["agent_id"], flag["copy_fetched_at"]) == ("a1", r.fetched_at)
 
 
 def test_answer_checks_are_counted_as_run_not_run_and_never_recorded(tmp_path):
@@ -152,3 +162,77 @@ def test_answer_checks_are_counted_as_run_not_run_and_never_recorded(tmp_path):
     old = library.write(a_retrieval(ARTICLE + b"<!--damaged-->"))
     old.write_text("")
     assert library.answer_checks() == (2, 2, 2)
+
+
+def test_the_latest_copy_of_a_url_comes_back_as_the_retrieval_it_was(tmp_path):
+    library = Library(tmp_path / ".retrieved").create()
+    assert library.latest("https://example.com/") is None
+
+    older = a_retrieval(ARTICLE + b"<!--older-->")
+    older.fetched_at = "2026-01-01T00:00:00+00:00"
+    newer = a_retrieval(ARTICLE + b"<!--newer-->")
+    newer.fetched_at = "2026-02-01T00:00:00+00:00"
+    library.write(newer)
+    library.write(older)
+    library.write(a_retrieval(ARTICLE + b"<!--elsewhere-->", url="https://example.org/"))
+
+    copy = library.latest("https://example.com/")
+    assert (copy.bytes_sha256, copy.fetched_at) == (newer.bytes_sha256, newer.fetched_at)
+    assert copy.body == newer.body
+    assert (copy.content_type, copy.http_status, copy.truncated) == ("text/html", 200, False)
+    # What the check reads off it, it reads the same as off the original.
+    assert check(QUOTED_WRONG, copy) == check(QUOTED_WRONG, newer)
+
+
+def test_a_copy_whose_bytes_are_gone_or_altered_is_passed_over_for_the_one_before(tmp_path):
+    library = Library(tmp_path / ".retrieved").create()
+    older = a_retrieval(ARTICLE + b"<!--older-->")
+    older.fetched_at = "2026-01-01T00:00:00+00:00"
+    newer = a_retrieval(ARTICLE + b"<!--newer-->")
+    newer.fetched_at = "2026-02-01T00:00:00+00:00"
+    library.write(older)
+    library.write(newer)
+
+    (library.store / newer.bytes_sha256).write_bytes(b"not what the record says")
+    assert library.latest("https://example.com/").bytes_sha256 == older.bytes_sha256
+
+    (library.store / newer.bytes_sha256).unlink()
+    assert library.latest("https://example.com/").bytes_sha256 == older.bytes_sha256
+
+    (library.retrievals / f"{older.bytes_sha256}.yaml").write_text("")
+    assert library.latest("https://example.com/") is None
+
+
+def test_a_check_against_a_stored_copy_is_appended_and_leaves_the_copys_record_alone(tmp_path):
+    library = Library(tmp_path / ".retrieved").create()
+    r = a_retrieval(ARTICLE)
+    path = library.write(r, session_id="s1", answer_check=check(QUOTED_RIGHT, r))
+    before = path.read_text()
+
+    library.checked_stored(
+        r, check(QUOTED_WRONG, r), declined="captured 12s ago", session_id="s2", agent_id="a1"
+    )
+    library.checked_stored(r, check(QUOTED_RIGHT, r), declined="captured 40s ago")
+    assert path.read_text() == before
+
+    first, second = (json.loads(line) for line in library.checks_path.read_text().splitlines())
+    assert (first["session_id"], first["agent_id"]) == ("s2", "a1")
+    assert (first["url"], first["bytes_sha256"]) == (r.url, r.bytes_sha256)
+    assert first["copy_fetched_at"] == r.fetched_at
+    assert first["not_fetched_because"] == "captured 12s ago"
+    assert first["answer_check"] == check(QUOTED_WRONG, r).as_record()
+    assert QUOTED_WRONG not in json.dumps(first)
+    assert second["answer_check"]["status"] == "found"
+
+
+def test_checks_against_stored_copies_are_counted_apart_from_records(tmp_path):
+    library = Library(tmp_path / ".retrieved").create()
+    assert library.stored_checks() == (0, 0)
+    r = a_retrieval(ARTICLE)
+    library.write(r, answer_check=check(QUOTED_RIGHT, r))
+    for said in (QUOTED_RIGHT, QUOTED_WRONG, "It keeps photographs.", None):
+        library.checked_stored(r, check(said, r), declined="captured 12s ago")
+    with library.checks_path.open("a") as handle:
+        handle.write("not json\n[]\n{}\n")
+    assert library.stored_checks() == (2, 2)
+    assert library.answer_checks() == (1, 0, 0)

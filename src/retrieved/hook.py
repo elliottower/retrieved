@@ -82,7 +82,7 @@ def _report() -> int:
 
     try:
         root = flags.library_root(pathlib.Path(cwd) if isinstance(cwd, str) and cwd else None)
-        notes = flags.undelivered(root, session)
+        notes = flags.undelivered(root, session, _agent(payload))
     except Exception:  # noqa: BLE001 - constraint 1 outranks knowing which error
         return 0
     if not notes:
@@ -102,6 +102,31 @@ def _report() -> int:
         )
     )
     return 0
+
+
+def _agent(payload: dict) -> str:
+    """Which subagent a hook fired in, or "" for the main agent.
+
+    A subagent's tool calls carry the session's `session_id` and an `agent_id` of their own.
+    Anything that is not a string is no agent, which is also what every payload held before
+    the field existed.
+    """
+    agent = payload.get("agent_id")
+    return agent if isinstance(agent, str) else ""
+
+
+def _checked(answer, payload: dict, retrieval):
+    """The answer in a payload checked against a retrieval, whatever the check does.
+
+    A check that fails is recorded as one that did not run, with why: it must not cost the
+    capture, and it must not leave a record that reads as though nothing was wrong.
+    """
+    tool_input = payload.get("tool_input")
+    prompt = tool_input.get("prompt") if isinstance(tool_input, dict) else ""
+    try:
+        return answer.check(_answer(payload), retrieval, prompt=prompt)
+    except Exception as error:  # noqa: BLE001 - constraint 1 outranks knowing which error
+        return answer.AnswerCheck(answer.NOT_RUN, reason=f"check failed: {type(error).__name__}")
 
 
 def _answer(payload: dict) -> object:
@@ -156,6 +181,7 @@ def main() -> int:
         return 0
 
     session = payload.get("session_id") or ""
+    agent = _agent(payload)
     cwd = payload.get("cwd")
     library = Library.resolve(pathlib.Path(cwd) if cwd else None)
     library.create()
@@ -176,6 +202,28 @@ def main() -> int:
             politeness.check(db, url, USER_AGENT, session_id=session)
     except politeness.Declined as declined:
         library.skip(declined.url, declined.reason, session_id=session)
+        # Declined is about the request, and the answer is here whether or not one is made. So
+        # where the library already holds the page, the answer is checked against that copy
+        # with no request at all, and everything written says which copy it was. Where it holds
+        # none, the skip above is the whole record and nothing is checked.
+        try:
+            copy = library.latest(url)
+            if copy is not None:
+                outcome = _checked(answer, payload, copy)
+                library.checked_stored(
+                    copy, outcome, declined=declined.reason, session_id=session, agent_id=agent
+                )
+                # A passage not found, and nothing else. A page with almost no text was flagged,
+                # if it was to be, when that copy was fetched, and a second note about the same
+                # bytes is the noise the first constraint of the report hook forbids.
+                if outcome.status == answer.NOT_FOUND:
+                    library.flag(
+                        copy, outcome, session_id=session, agent_id=agent, stored_copy=True
+                    )
+        except Exception as error:  # noqa: BLE001 - constraint 1 outranks knowing which error
+            library.skip(
+                url, f"stored copy not checked: {type(error).__name__}", session_id=session
+            )
         return 0
     except Exception as error:  # noqa: BLE001 - pacing must never break a capture
         # Proceed unpaced rather than not at all, and say so. A rate limiter that failed is a
@@ -200,13 +248,8 @@ def main() -> int:
         library.skip(url, f"fetch failed: {type(error).__name__}", session_id=session)
         return 0
 
-    # Checked here, with the page in hand and nobody waiting. A check that fails is recorded as
-    # one that did not run, with why: it must not cost the capture, and it must not leave a
-    # record that reads as though nothing was wrong.
-    try:
-        outcome = answer.check(_answer(payload), retrieval)
-    except Exception as error:  # noqa: BLE001 - constraint 1 outranks knowing which error
-        outcome = answer.AnswerCheck(answer.NOT_RUN, reason=f"check failed: {type(error).__name__}")
+    # Checked here, with the page in hand and nobody waiting.
+    outcome = _checked(answer, payload, retrieval)
 
     try:
         library.write(
@@ -216,7 +259,7 @@ def main() -> int:
             answer_check=outcome,
         )
         if outcome.flagged:
-            library.flag(retrieval, outcome, session_id=session)
+            library.flag(retrieval, outcome, session_id=session, agent_id=agent)
     except OSError as error:
         library.skip(url, f"could not write: {error.strerror}", session_id=session)
     return 0
