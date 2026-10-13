@@ -7,8 +7,15 @@
   block saying they were all found, which were not, or why nothing was checked. The answer is
   not stored, only its digest.
 - A long answer over a page with almost no text is recorded as `answer_without_page_text`,
-  separately from quotations.
-- A mismatch is appended to `flags.jsonl`, and `retrieved-hook --report`, registered for every
+  separately from quotations. It is recorded only: it writes no flag and produces no note, and
+  `retrieved status` counts it on its own line. As a note it was wrong each of the 35 times it
+  fired on past answers.
+- A second fetch answered with an error status is `not_run`, and no passage is looked for in an
+  error page. Where the fetch tool's own request succeeded, the reason says the page the tool
+  read was not obtained.
+- A later fetch that returns the same bytes no longer replaces the record and the earlier
+  answer's check in it. The later check is appended to `answer_checks.jsonl`.
+- A passage not found is appended to `flags.jsonl`, and `retrieved-hook --report`, registered for every
   tool, tells the agent once on the session's next tool call. It prints nothing otherwise.
   `retrieved hook` prints both entries.
 - `retrieved status` reports how many answers were flagged, checked, not checked, and never

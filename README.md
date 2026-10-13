@@ -127,7 +127,11 @@ Every record written by the hook says which of three things happened, under `ans
 | `not_found` | some are not; the record lists them |
 | `not_run` | nothing was checked, and `reason` says why |
 
-`not_run` is not a pass. A PDF with no `pdftotext` installed, one it could not read or did not
+`not_run` is not a pass. A second fetch the server answered with an error is one: a 403 or a 404
+carries a page of its own, and a passage looked for there would be reported missing from a page
+nobody quoted. Where the fetch tool's own request had succeeded the reason says so outright,
+`the independent fetch was refused (HTTP 403); the page the tool read was not obtained`, which
+is "could not check" and not a doubt about the answer. A PDF with no `pdftotext` installed, one it could not read or did not
 finish in twenty seconds, and one with no text layer are each `not_run` with that as the reason,
 and never a passage reported missing. So are JSON that does not parse, a ZIP or an image, a
 truncated page, which would report its last passages missing, a page with almost no text, which
@@ -135,9 +139,11 @@ is a wall or a shell and not the article, and an answer with no quotation in it.
 `answer_check` at all predates the check or was captured by hand.
 
 One more thing is measured, separately from quotations: an answer of 800 characters or more over
-an HTML or plain-text page holding fewer than 400 characters of text. That is a login wall, an
-error page or an unrendered shell, and the answer did not come from it. It is recorded as
-`answer_without_page_text` and never as a quotation that failed.
+an HTML or plain-text page, served with success, holding fewer than 400 characters of text. It
+is recorded as `answer_without_page_text` and nobody is told. It was a note once. Over 1,407
+past answers it fired on 35, and on none was the answer at fault: on 22 the second fetch had
+met a wall the fetch tool did not, on 8 the answer itself said the page was empty, and 5 were
+the fetch tool's notice of a redirect. `retrieved status` counts it on a line of its own.
 
 **A URL the rate limiter declines** is not fetched, and the answer is still there. Where the
 library already holds a copy of that URL, the answer is checked against the most recent copy
@@ -156,7 +162,12 @@ way says so:
 Where the library holds no copy, the line in `skipped.jsonl` is the whole record and nothing is
 checked. `retrieved status` counts these checks on a line of their own.
 
-A mismatch is appended to `flags.jsonl`. The second entry `retrieved hook` prints,
+The same file takes one other case. A record is named by its bytes, so a page fetched again
+unchanged names the record it already has. That record keeps the first answer's check, and the
+later answer's check is a line of `answer_checks.jsonl` with `same_bytes_fetched_at` set. Its
+note, if it raises one, is the ordinary one: the page was fetched.
+
+A passage not found is appended to `flags.jsonl`, and nothing else is. The second entry `retrieved hook` prints,
 `retrieved-hook --report`, hands it to the agent once, on the next tool call that session makes,
 and prints nothing on every other call. Without that entry the check still runs and is recorded;
 `retrieved status` counts what was flagged.

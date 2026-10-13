@@ -56,11 +56,21 @@ line of `answer_checks.jsonl`:
 | `url` | what was asked for |
 | `bytes_sha256` | which copy the answer was checked against |
 | `copy_fetched_at` | when that copy was fetched, which is not when the answer was given |
-| `not_fetched_because` | the rate limiter's reason, as in `skipped.jsonl` |
+| `not_fetched_because` | the rate limiter's reason, as in `skipped.jsonl`, where no request was made |
+| `same_bytes_fetched_at` | when a request was made and returned the bytes the record already names. One of this and the field above is set |
 | `answer_check` | the same block a record carries |
 
-The file is append-only. Several answers checked against one copy are several lines, and the
-copy's record is never rewritten.
+The file is append-only. Several answers checked against one copy are several lines, and a
+record that carries a check is never rewritten: not by a check against it, and not by a later
+fetch that returns the same bytes. The index row is replaced by that fetch, so the index gives
+the last time the bytes came back and the record the first.
+
+## What is told, and what is only recorded
+
+`flags.jsonl` holds one thing: an answer that quoted a passage the page does not hold.
+`answer_without_page_text` is recorded in the block and never flagged. A second fetch that came
+back with an error status is `not_run`, whatever the answer said, and no passage is looked for
+in an error page.
 
 ## Two digests
 
