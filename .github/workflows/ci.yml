@@ -21,6 +21,9 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
           python-version: ${{ matrix.python }}
+      # pdftotext, which the answer check runs on a PDF where one is installed. Without it the
+      # tests of that path skip cleanly, which is a path nothing in CI would then exercise.
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends poppler-utils
       - run: uv sync --all-extras --dev
       # The floor is `fail_under` in pyproject.toml, so CI and a developer's own run check the
       # same number. COVERAGE_PROCESS_START is what lets coverage see the hook, which is tested

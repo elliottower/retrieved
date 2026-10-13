@@ -49,7 +49,12 @@ done
 if [ -z "$DRY" ]; then
     # index.db and skipped.jsonl are small and rebuildable from the records, but a restore that
     # reproduces what was declined as well as what was kept is a better restore.
-    for file in index.db skipped.jsonl; do
+    #
+    # flags.jsonl and answer_checks.jsonl are not rebuildable from anything. A flag is an answer
+    # that did not match its page, and a line of answer_checks.jsonl is an answer checked
+    # against a copy already held; the answers themselves were never stored, so these two files
+    # are the only record that either check was made.
+    for file in index.db skipped.jsonl flags.jsonl answer_checks.jsonl; do
         [ -f "$LIBRARY/$file" ] && gcloud storage cp "$LIBRARY/$file" "$BUCKET/$file" 2>&1 | tail -1
     done
 else
