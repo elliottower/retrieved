@@ -11,7 +11,7 @@ import sqlite3
 import httpx
 import pytest
 
-from retrieved import answer, capture, cli, politeness
+from retrieved import answer, api, capture, cli, politeness
 from retrieved.store import Library
 
 
@@ -44,7 +44,7 @@ def serve(monkeypatch, body=None, ctype="text/html"):
         with httpx.Client(transport=httpx.MockTransport(handler)) as c:
             return real(url, timeout=timeout, client=c)
 
-    monkeypatch.setattr(cli, "fetch", offline)
+    monkeypatch.setattr(api, "fetch", offline)
 
 
 def test_capture_writes_a_record_and_reports_both_digests(home, monkeypatch, capsys):

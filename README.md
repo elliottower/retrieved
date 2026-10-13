@@ -224,11 +224,16 @@ A quotation whose words are also in the prompt is not checked either, including 
 attributes to the page.
 
 What it gets wrong, in the other direction, is a passage the answer reproduced faithfully from a
-page that writes it another way. A formula is the common case: an arXiv listing or feed carries
-`$\rho = 0.19$` as TeX, the answer writes `ρ = 0.19`, and the passage is reported missing. Text a
-page hides from sight and keeps in its markup (`opens in new tab`) is another. An answer that
-drops a citation or a parenthesis from the middle of a quotation without marking the cut is
-reported too, and there the report is right: those words in that order are not on the page.
+page that writes it another way. Three such ways are read for. A formula an arXiv listing or
+feed carries as TeX, `$\kappa = 0.36$`, is also read as the characters it renders to, by a
+closed table of one command to one character, so `κ = 0.36` in an answer is found. A footnote's
+marker and note set inside a sentence, and words written for a screen reader (`opens in new
+tab/window`), are left out of one reading of the page. Each is a reading beside the others, so
+it can find a passage and never lose one. Over the 14 passages of 1,407 past answers that were
+faithful and reported missing, 8 are found this way and 6 are not: formulas with accents,
+primes or a command the table does not hold. An answer that drops a citation or a parenthesis
+from the middle of a quotation without marking the cut is reported too, and there the report is
+right: those words in that order are not on the page.
 
 ## What it refuses to fetch
 
@@ -264,6 +269,16 @@ rather than assumed.
 The command is paced the same way the hook is. A rate limit one entry point honors and another
 ignores is not a rate limit, and a script in a loop uses the entry point that ignores it. Pass
 `--now` to capture something the limit would have held.
+
+The hook's worker waits for a host's turn where the turn comes within 30 seconds: nobody is
+waiting on it, so a second page from one host is captured two seconds late and not lost. The turn
+is written down before the wait, so several workers started together queue and do not all go at
+once. The command does not wait; it declines, and says `--now`.
+
+From a program, `retrieved.api.capture(url)` is those steps in their order: the denylist, the
+limiter, the request, the record. It returns the retrieval, the path of its record and whether
+the page was a wall, and raises `Refused` or `Declined` after writing either to `skipped.jsonl`.
+`wait=` is how long it will be held for a host's turn.
 
 Every refusal lands in `skipped.jsonl` with its reason, so a missing capture can be told apart
 from a page nobody fetched.

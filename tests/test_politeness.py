@@ -127,3 +127,45 @@ def test_the_robots_fetch_goes_through_the_denylist(monkeypatch):
         assert politeness._robots_for(connection, "localhost", "http") is None
     finally:
         connection.close()
+
+
+def test_with_a_wait_a_request_takes_its_turn_and_the_next_queues_behind_it(db):
+    slept = []
+    record(db, "https://example.com/a")
+    check(db, "https://example.com/b", AGENT, wait=10, sleep=slept.append)
+    check(db, "https://example.com/c", AGENT, wait=10, sleep=slept.append)
+    first, second = slept
+    assert 0 < first <= politeness.MIN_HOST_INTERVAL
+    # The second did not find the same gap free: its turn is a whole interval after the first's.
+    assert second == pytest.approx(first + politeness.MIN_HOST_INTERVAL, abs=0.5)
+
+
+def test_a_turn_further_off_than_the_wait_is_declined_and_takes_no_turn(db):
+    slept = []
+    record(db, "https://example.com/a")
+    check(db, "https://example.com/b", AGENT, wait=10, sleep=slept.append)
+    with pytest.raises(Declined) as caught:
+        check(db, "https://example.com/c", AGENT, wait=1, sleep=slept.append)
+    assert "waiting their turn" in caught.value.reason
+    assert len(slept) == 1
+    # Declining reserved nothing: the next caller with patience gets the turn it would have.
+    check(db, "https://example.com/d", AGENT, wait=10, sleep=slept.append)
+    assert slept[1] == pytest.approx(slept[0] + politeness.MIN_HOST_INTERVAL, abs=0.5)
+
+
+def test_a_host_never_asked_before_is_asked_at_once_and_its_turn_is_written_down(db):
+    slept = []
+    check(db, "https://example.com/a", AGENT, sleep=slept.append)
+    assert slept == []
+    # A second process arriving before the first has made its request is held all the same.
+    with pytest.raises(Declined):
+        check(db, "https://example.com/b", AGENT)
+
+
+def test_recording_a_request_never_moves_a_later_turn_backwards(db):
+    slept = []
+    record(db, "https://example.com/a")
+    check(db, "https://example.com/b", AGENT, wait=10, sleep=slept.append)
+    (taken,) = db.execute("SELECT last_fetch FROM host_state").fetchone()
+    record(db, "https://example.com/a")
+    assert db.execute("SELECT last_fetch FROM host_state").fetchone() == (taken,)

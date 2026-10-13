@@ -565,7 +565,9 @@ def test_a_declined_url_whose_answer_matches_the_stored_copy_is_recorded_and_rai
 
 def test_a_declined_url_the_library_holds_no_copy_of_is_skipped_and_nothing_else(home, monkeypatch):
     capture_in_process(monkeypatch, fetched("https://example.com/ferry", ON_THE_PAGE))
-    # Another page of the same host, inside the minimum interval between two requests to it.
+    # Another page of the same host, inside the minimum interval between two requests to it,
+    # from a worker that will not wait for its turn.
+    monkeypatch.setattr(hook, "HOST_WAIT", 0.0)
     made = counting_fetches()
     capture_in_process(monkeypatch, fetched("https://example.com/fares", NOT_ON_THE_PAGE))
     assert made == []
@@ -739,3 +741,18 @@ def test_a_fetch_a_subagent_made_and_the_limiter_declined_names_the_subagent(hom
     (line,) = (json.loads(line) for line in (home / "skipped.jsonl").read_text().splitlines())
     assert line["reason"].startswith("captured ")
     assert line["agent_id"] == "a4"
+
+
+def test_a_second_page_of_one_host_waits_for_its_turn_and_is_captured(home, monkeypatch):
+    slept = []
+    monkeypatch.setattr(politeness.time, "sleep", slept.append)
+    capture_in_process(monkeypatch, fetched("https://example.com/ferry", ON_THE_PAGE))
+    capture_in_process(monkeypatch, fetched("https://example.com/fares", ON_THE_PAGE))
+    assert not (home / "skipped.jsonl").exists()
+    assert len(list((home / "retrievals").glob("*.yaml"))) == 1
+    # Two addresses that answered with the same bytes, perhaps in the same second: two fetches.
+    library = Library(home)
+    assert len(library.history("https://example.com/ferry")) == 1
+    assert len(library.history("https://example.com/fares")) == 1
+    (waited,) = slept
+    assert 0 < waited <= politeness.MIN_HOST_INTERVAL

@@ -33,6 +33,12 @@ from retrieved import flags
 
 MAX_STDIN = 4 * 1024 * 1024
 
+#: How long the detached worker will wait for a host's turn. Nobody is waiting on it, so a page
+#: fetched two seconds after another from the same host is captured two seconds late and not
+#: lost. Past this the capture is declined: a worker a minute behind its session has stopped
+#: being a byproduct of it.
+HOST_WAIT = 30.0
+
 
 def _detach() -> int:
     """Pass stdin to a background copy and return, so the session never waits on a fetch.
@@ -225,7 +231,7 @@ def main() -> int:
 
     try:
         with library.connect() as db:
-            politeness.check(db, url, USER_AGENT, session_id=session)
+            politeness.check(db, url, USER_AGENT, session_id=session, wait=HOST_WAIT)
     except politeness.Declined as declined:
         library.skip(declined.url, declined.reason, session_id=session, agent_id=agent)
         # Declined is about the request, and the answer is here whether or not one is made. So

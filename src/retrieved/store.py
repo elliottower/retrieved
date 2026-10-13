@@ -40,7 +40,10 @@ CHECKS_NAME = "answer_checks.jsonl"
 
 # One row a fetch. The key was the bytes' digest alone once, so a page fetched again unchanged
 # replaced its own row and the earlier fetch left the index: `history` showed one capture where
-# there had been two, and the time of the first was gone from everywhere but the record.
+# there had been two, and the time of the first was gone from everywhere but the record. The
+# URL is in the key beside the time because two addresses can answer with the same bytes in the
+# same second, an empty body or a site's one error page, and those are two fetches as well.
+KEY = ["bytes_sha256", "url", "fetched_at"]
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS retrievals (
     bytes_sha256 TEXT NOT NULL,
@@ -50,13 +53,13 @@ CREATE TABLE IF NOT EXISTS retrievals (
     http_status  INTEGER NOT NULL,
     text_sha256  TEXT NOT NULL,
     session_id   TEXT,
-    PRIMARY KEY (bytes_sha256, fetched_at)
+    PRIMARY KEY (bytes_sha256, url, fetched_at)
 );
 CREATE INDEX IF NOT EXISTS retrievals_url ON retrievals(url);
 CREATE INDEX IF NOT EXISTS retrievals_text ON retrievals(text_sha256);
 """
 
-# An index made before the key included the time is rebuilt with every row it holds. Run a
+# An index made under an earlier key is rebuilt with every row it holds. Run a
 # second time, by a second process that saw the old key in the same moment, it copies the new
 # table into a new table and changes nothing.
 _REKEY = """
@@ -70,7 +73,7 @@ CREATE TABLE retrievals (
     http_status  INTEGER NOT NULL,
     text_sha256  TEXT NOT NULL,
     session_id   TEXT,
-    PRIMARY KEY (bytes_sha256, fetched_at)
+    PRIMARY KEY (bytes_sha256, url, fetched_at)
 );
 INSERT INTO retrievals SELECT * FROM retrievals_by_bytes;
 DROP TABLE retrievals_by_bytes;
@@ -106,7 +109,7 @@ class Library:
         self.retrievals.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             keyed_by = [row[1] for row in db.execute("PRAGMA table_info(retrievals)") if row[5]]
-            if keyed_by == ["bytes_sha256"]:
+            if keyed_by and keyed_by != KEY:
                 try:
                     db.executescript(_REKEY)
                 except sqlite3.Error:

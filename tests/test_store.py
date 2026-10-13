@@ -371,6 +371,39 @@ def test_an_index_keyed_by_bytes_alone_is_rebuilt_with_every_row_it_held(tmp_pat
     assert len(library.history(r.url)) == 5
 
 
+@pytest.mark.parametrize(
+    "key", ["bytes_sha256 TEXT PRIMARY KEY", "bytes_sha256 TEXT NOT NULL"], ids=["v1", "v2"]
+)
+def test_an_index_under_either_earlier_key_ends_keyed_by_bytes_url_and_time(tmp_path, key):
+    root = tmp_path / ".retrieved"
+    root.mkdir()
+    db = sqlite3.connect(root / "index.db")
+    tail = "" if "PRIMARY" in key else ", PRIMARY KEY (bytes_sha256, fetched_at)"
+    db.executescript(
+        f"CREATE TABLE retrievals ({key}, url TEXT NOT NULL, final_url TEXT NOT NULL, "
+        f"fetched_at TEXT NOT NULL, http_status INTEGER NOT NULL, text_sha256 TEXT NOT NULL, "
+        f"session_id TEXT{tail});"
+    )
+    row = ("d" * 64, "https://example.com/a", "https://example.com/a", "2026-01-01", 200, "t", "s")
+    db.execute("INSERT INTO retrievals VALUES (?,?,?,?,?,?,?)", row)
+    db.commit()
+    db.close()
+
+    library = Library(root).create()
+    with library.connect() as db:
+        keyed_by = [r[1] for r in db.execute("PRAGMA table_info(retrievals)") if r[5]]
+        assert keyed_by == ["bytes_sha256", "url", "fetched_at"]
+        assert db.execute("SELECT * FROM retrievals").fetchall() == [row]
+
+    # Two addresses, the same bytes, the same second: two rows.
+    for url in ("https://example.com/x", "https://example.com/y"):
+        r = a_retrieval(b"", url=url)
+        r.fetched_at = "2026-02-01T00:00:00+00:00"
+        library.write(r)
+    assert len(library.history("https://example.com/x")) == 1
+    assert len(library.history("https://example.com/y")) == 1
+
+
 def test_a_url_fetched_twice_unchanged_is_two_fetches_and_one_reading(tmp_path):
     library = Library(tmp_path / ".retrieved").create()
     r = a_retrieval()
