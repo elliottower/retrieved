@@ -123,8 +123,10 @@ def _checked(answer, payload: dict, retrieval):
     """
     tool_input = payload.get("tool_input")
     prompt = tool_input.get("prompt") if isinstance(tool_input, dict) else ""
+    response = payload.get("tool_response")
+    tool_status = response.get("code") if isinstance(response, dict) else None
     try:
-        return answer.check(_answer(payload), retrieval, prompt=prompt)
+        return answer.check(_answer(payload), retrieval, prompt=prompt, tool_status=tool_status)
     except Exception as error:  # noqa: BLE001 - constraint 1 outranks knowing which error
         return answer.AnswerCheck(answer.NOT_RUN, reason=f"check failed: {type(error).__name__}")
 
@@ -213,10 +215,7 @@ def main() -> int:
                 library.checked_stored(
                     copy, outcome, declined=declined.reason, session_id=session, agent_id=agent
                 )
-                # A passage not found, and nothing else. A page with almost no text was flagged,
-                # if it was to be, when that copy was fetched, and a second note about the same
-                # bytes is the noise the first constraint of the report hook forbids.
-                if outcome.status == answer.NOT_FOUND:
+                if outcome.flagged:
                     library.flag(
                         copy, outcome, session_id=session, agent_id=agent, stored_copy=True
                     )
@@ -255,6 +254,7 @@ def main() -> int:
         library.write(
             retrieval,
             session_id=session,
+            agent_id=agent,
             prompt=tool_input.get("prompt") or "",
             answer_check=outcome,
         )

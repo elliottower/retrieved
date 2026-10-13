@@ -153,6 +153,10 @@ class AnswerCheck:
     not_found: tuple[str, ...] = ()
     #: Separate from the quotations on purpose. It can be true when no passage was checked at
     #: all, and reporting it as a quotation that failed would say something that was not measured.
+    #: Recorded and never told to the agent. Over 1,407 past answers it was true of 35, and on
+    #: none was the answer at fault: the second fetch had met a wall the first did not, or the
+    #: answer itself said the page was empty. A note that is wrong whenever it is given teaches
+    #: its reader to pass over the notes that are right.
     answer_without_page_text: bool = False
     answer_chars: int = 0
     #: None where the page is not text this library extracts, which is not the same as zero.
@@ -164,8 +168,13 @@ class AnswerCheck:
 
     @property
     def flagged(self) -> bool:
-        """Whether the agent should be told. Never true merely because the check did not run."""
-        return self.status == NOT_FOUND or self.answer_without_page_text
+        """Whether the agent should be told: a quoted passage is not in the page, and only that.
+
+        Never true merely because the check did not run, and never for an answer longer than
+        its page's text, which is a fact about the second fetch more often than about the
+        answer.
+        """
+        return self.status == NOT_FOUND
 
     def as_record(self) -> dict[str, object]:
         """The block a retrieval's record carries. The digest of the answer, never the answer."""
@@ -303,7 +312,13 @@ def occurs(passage: str, folded_page: str, *, typeset: bool = False) -> bool:
     return bool(squeezed) and squeezed in squeeze(folded_page, typeset=typeset)
 
 
-def check(answer: object, retrieval: Retrieval, *, prompt: object = "") -> AnswerCheck:
+def _succeeded(status: object) -> bool:
+    return type(status) is int and 200 <= status < 300
+
+
+def check(
+    answer: object, retrieval: Retrieval, *, prompt: object = "", tool_status: object = None
+) -> AnswerCheck:
     """Check the fetch tool's answer against a retrieval of the same URL.
 
     `answer` is whatever the hook payload held, which is why it is typed as an object: anything
@@ -313,6 +328,9 @@ def check(answer: object, retrieval: Retrieval, *, prompt: object = "") -> Answe
     prompt is the agent's own wording handed back -- a title it asked after, a phrase the answer
     says the page does not use, the whole prompt repeated in the fetch tool's notice of a
     redirect -- and is not a claim about the page, so it is not looked for there.
+
+    `tool_status` is the HTTP status the fetch tool reported for its own request, where the
+    payload gave one. It decides nothing but the wording of one reason.
     """
     if not isinstance(answer, str) or not answer.strip():
         return AnswerCheck(NOT_RUN, reason="no answer in the payload")
@@ -324,6 +342,22 @@ def check(answer: object, retrieval: Retrieval, *, prompt: object = "") -> Answe
         "answer_chars": len(answer),
         "answer_sha256": hashlib.sha256(answer.encode()).hexdigest(),
     }
+
+    # An error page is not the page. A server that refuses this library and served the fetch
+    # tool returns a 403 with a paragraph of its own, or a 404 with the site's whole navigation,
+    # and a passage looked for there is reported missing from a page nobody quoted. So nothing
+    # is looked for, and where the tool's own request succeeded the reason says outright that
+    # the page it read was not obtained: that is "could not check", not a doubt about the answer.
+    if not _succeeded(retrieval.http_status):
+        got = f"HTTP {retrieval.http_status}"
+        return AnswerCheck(
+            NOT_RUN,
+            reason=f"the independent fetch was refused ({got}); the page the tool read was not "
+            f"obtained"
+            if _succeeded(tool_status)
+            else f"the independent fetch returned {got}, and an error page is not the page",
+            **about_the_answer,
+        )
 
     # Before extraction, because half a PDF does not parse and half a JSON document does not
     # either, and "truncated" is the truer reason for both.

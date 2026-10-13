@@ -322,6 +322,32 @@ def test_status_counts_checks_against_stored_copies_without_counting_a_page_twic
     assert "captured  1" in out
     assert "answers   1 flagged   1 checked   0 not run   0 with no check recorded" in out
     assert "1 more checked against a stored copy   1 not run   (see answer_checks.jsonl)" in out
+    assert "0 answers recorded as longer than their page's text" in out
+
+
+def test_status_counts_a_long_answer_over_an_empty_page_apart_from_the_flags(
+    home, monkeypatch, capsys
+):
+    def handler(request):
+        return httpx.Response(
+            200,
+            content=b"<html><body>Sign in.</body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as c:
+        r = capture.fetch("https://example.com/minutes", client=c)
+    outcome = answer.check("The committee met on the second Tuesday of the month. " * 20, r)
+    assert outcome.answer_without_page_text and not outcome.flagged
+    Library.resolve().create().write(r, answer_check=outcome)
+
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "answers   0 flagged   0 checked   1 not run   0 with no check recorded" in out
+    assert (
+        "1 answers recorded as longer than their page's text   (recorded only, never flagged)"
+        in out
+    )
 
 
 def test_status_counts_no_flags_in_a_library_that_predates_them(home, monkeypatch, capsys):

@@ -220,6 +220,7 @@ def test_a_check_against_a_stored_copy_is_appended_and_leaves_the_copys_record_a
     assert (first["url"], first["bytes_sha256"]) == (r.url, r.bytes_sha256)
     assert first["copy_fetched_at"] == r.fetched_at
     assert first["not_fetched_because"] == "captured 12s ago"
+    assert first["same_bytes_fetched_at"] is None
     assert first["answer_check"] == check(QUOTED_WRONG, r).as_record()
     assert QUOTED_WRONG not in json.dumps(first)
     assert second["answer_check"]["status"] == "found"
@@ -236,3 +237,69 @@ def test_checks_against_stored_copies_are_counted_apart_from_records(tmp_path):
         handle.write("not json\n[]\n{}\n")
     assert library.stored_checks() == (2, 2)
     assert library.answer_checks() == (1, 0, 0)
+
+
+def test_a_later_fetch_of_the_same_bytes_does_not_replace_the_earlier_answers_check(tmp_path):
+    library = Library(tmp_path / ".retrieved").create()
+    r = a_retrieval(ARTICLE)
+    r.fetched_at = "2026-01-01T00:00:00+00:00"
+    path = library.write(r, session_id="s1", prompt="first", answer_check=check(QUOTED_RIGHT, r))
+    before = path.read_text()
+
+    again = a_retrieval(ARTICLE)
+    again.fetched_at = "2026-03-01T00:00:00+00:00"
+    assert again.bytes_sha256 == r.bytes_sha256
+    wrong = check(QUOTED_WRONG, again)
+    assert library.write(again, session_id="s2", agent_id="a1", answer_check=wrong) == path
+
+    assert path.read_text() == before
+    assert yaml.safe_load(before)["answer_check"]["status"] == "found"
+    (line,) = (json.loads(line) for line in library.checks_path.read_text().splitlines())
+    assert (line["session_id"], line["agent_id"]) == ("s2", "a1")
+    assert (line["url"], line["bytes_sha256"]) == (r.url, r.bytes_sha256)
+    assert line["copy_fetched_at"] == "2026-01-01T00:00:00+00:00"
+    assert line["same_bytes_fetched_at"] == "2026-03-01T00:00:00+00:00"
+    assert line["not_fetched_because"] is None
+    assert line["answer_check"] == wrong.as_record()
+
+    # The index and the copy handed out both carry the time the bytes last came back.
+    assert library.history(r.url) == [(again.fetched_at, r.bytes_sha256, r.text_sha256)]
+    assert library.latest(r.url).fetched_at == again.fetched_at
+    assert library.answer_checks() == (1, 0, 0)
+    assert library.stored_checks() == (1, 0)
+
+
+def test_a_capture_by_hand_of_the_same_bytes_leaves_a_checked_record_alone(tmp_path):
+    library = Library(tmp_path / ".retrieved").create()
+    r = a_retrieval(ARTICLE)
+    path = library.write(r, answer_check=check(QUOTED_WRONG, r))
+    before = path.read_text()
+    library.write(a_retrieval(ARTICLE), prompt="by hand")
+    assert path.read_text() == before
+    assert not library.checks_path.exists()
+
+
+def test_a_record_with_no_check_to_lose_is_written_again_as_it_always_was(tmp_path):
+    library = Library(tmp_path / ".retrieved").create()
+    path = library.write(a_retrieval(ARTICLE), prompt="by hand")
+    r = a_retrieval(ARTICLE)
+    library.write(r, prompt="by the hook", answer_check=check(QUOTED_WRONG, r))
+    record = yaml.safe_load(path.read_text())
+    assert (record["prompt"], record["answer_check"]["status"]) == ("by the hook", "not_found")
+    assert not library.checks_path.exists()
+
+
+def test_answers_longer_than_their_pages_text_are_counted_wherever_they_were_recorded(tmp_path):
+    library = Library(tmp_path / ".retrieved").create()
+    wall = b"<html><body><p>Please sign in to continue reading.</p></body></html>"
+    long = "The archive keeps some forty thousand photographs. " * 20
+    for n in range(2):
+        r = a_retrieval(wall + f"<!--{n}-->".encode())
+        outcome = check(long, r)
+        assert outcome.answer_without_page_text
+        library.write(r, answer_check=outcome)
+    library.checked_stored(r, check(long, r), declined="captured 12s ago")
+    article = a_retrieval(ARTICLE)
+    library.write(article, answer_check=check(long, article))
+    assert library.survey() == {"ran": 0, "not_run": 3, "absent": 0, "longer_than_page": 3}
+    assert not library.flags_path.exists()

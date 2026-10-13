@@ -779,18 +779,53 @@ def test_an_answer_that_quotes_nothing_is_not_run_rather_than_found():
 WALL = b"<html><body><h1>Sign in</h1><p>Please sign in to continue reading.</p></body></html>"
 
 
-def test_a_long_answer_over_a_page_with_almost_no_text_raises_its_own_flag():
+def test_a_long_answer_over_a_page_with_almost_no_text_is_recorded_and_tells_nobody():
     said = "The lighthouse was built in 1871. " * 30
     assert len(said) >= answer.LONG_ANSWER_CHARS
-    outcome = check(said, a_page(body=WALL, status=403))
+    outcome = check(said, a_page(body=WALL))
     assert outcome.answer_without_page_text
-    assert outcome.flagged
-    # Its own flag: no quotation was checked, so none is reported as failing.
+    assert outcome.as_record()["answer_without_page_text"] is True
+    assert not outcome.flagged
+    # Its own measure: no quotation was checked, so none is reported as failing.
     assert outcome.status == NOT_RUN
     assert "too few to check against" in outcome.reason
     assert outcome.not_found == ()
     assert outcome.answer_chars == len(said)
     assert outcome.page_text_chars == len("Sign in Please sign in to continue reading.")
+
+
+@pytest.mark.parametrize("status", [403, 404, 429, 500, 301, 199])
+def test_a_refused_fetch_is_could_not_check_and_never_a_doubt_about_the_answer(status):
+    # The whole article comes back under an error status, with a passage the answer misquotes
+    # and an answer long enough to be measured against the page. None of it is looked at.
+    said = 'It says "the first keeper retired to the mainland with his two dogs" there. ' * 12
+    outcome = check(said, a_page(status=status), tool_status=200)
+    assert outcome.status == NOT_RUN
+    assert outcome.reason == (
+        f"the independent fetch was refused (HTTP {status}); the page the tool read was not "
+        "obtained"
+    )
+    assert (outcome.quotations, outcome.not_found) == (0, ())
+    assert (outcome.page_text_chars, outcome.checked_against) == (None, "")
+    assert not outcome.answer_without_page_text
+    assert not outcome.flagged
+    assert outcome.answer_chars == len(said)
+
+
+@pytest.mark.parametrize("tool_status", [None, 403, 0, "200", True, 200.0])
+def test_an_error_page_is_not_checked_whatever_the_tool_reported(tool_status):
+    said = 'It says "the first keeper retired to the mainland with his two dogs" in passing.'
+    outcome = check(said, a_page(status=404), tool_status=tool_status)
+    assert (outcome.status, outcome.flagged) == (NOT_RUN, False)
+    assert outcome.reason == (
+        "the independent fetch returned HTTP 404, and an error page is not the page"
+    )
+
+
+@pytest.mark.parametrize("status", [200, 203, 299])
+def test_a_page_served_with_success_is_checked(status):
+    said = 'It says "the first keeper retired to the mainland with his two dogs" in passing.'
+    assert check(said, a_page(status=status), tool_status=200).status == NOT_FOUND
 
 
 def test_quotations_are_not_checked_against_a_page_with_almost_no_text():

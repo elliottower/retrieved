@@ -122,13 +122,6 @@ def note(flag: dict) -> str:
         )
     else:
         where, caveat = "the page as retrieved", INDEPENDENT
-    if flag.get("answer_without_page_text"):
-        return (
-            f"retrieved: the fetch answer for {url} runs to {flag.get('answer_chars')} "
-            f"characters, and the page as retrieved holds {flag.get('page_text_chars')} "
-            f"characters of text (HTTP {flag.get('http_status')}). The answer may not come from "
-            f"the page. {INDEPENDENT}"
-        )
     passages = [str(passage) for passage in flag.get("not_found") or []]
     shown = ", ".join(f'"{passage}"' for passage in passages[:NOTE_PASSAGES])
     if len(passages) > NOTE_PASSAGES:
@@ -165,6 +158,11 @@ def _is_for(flag: dict, session_id: str, agent_id: str) -> bool:
     reads as the main agent's, and is delivered as it always was.
     """
     if flag.get("session_id") != session_id:
+        return False
+    # A line with no passage is from a release that also flagged a long answer over a page with
+    # almost no text. That is recorded now and no longer told, and a line already written is
+    # not told either.
+    if not flag.get("not_found"):
         return False
     return not agent_id or (flag.get("agent_id") or "") == agent_id
 
