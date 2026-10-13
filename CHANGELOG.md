@@ -48,6 +48,16 @@
   characters. Before this a wall of 400 characters or more was searched as though it were the
   page. Nothing is retried and no request is changed.
 
+- The index holds one row a fetch. Its key was the bytes' digest alone, so a page fetched
+  again unchanged replaced its own row, and `retrieved history` lost the earlier fetch. An
+  index made before this is rebuilt, with every row it holds, the first time it is opened.
+- `RETRIEVED_KEEP` says whose bytes the hook stores: `all`, the default; `flagged`, only a page
+  whose answer quoted a passage it does not hold; `none`. The record, both digests and the
+  check of the answer are written whichever it is, and the record says `bytes_kept`.
+  `retrieved verify` counts a record kept without bytes apart from one whose bytes are gone.
+  `retrieved capture` always keeps the bytes.
+- A line of `skipped.jsonl` names the subagent whose fetch it was, where one made it.
+
 ## 0.1.0
 
 - `retrieved capture` fetches a URL independently, stores the bytes, and records two digests: one

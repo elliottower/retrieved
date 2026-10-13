@@ -38,18 +38,43 @@ from retrieved.wall import recognise
 
 CHECKS_NAME = "answer_checks.jsonl"
 
+# One row a fetch. The key was the bytes' digest alone once, so a page fetched again unchanged
+# replaced its own row and the earlier fetch left the index: `history` showed one capture where
+# there had been two, and the time of the first was gone from everywhere but the record.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS retrievals (
-    bytes_sha256 TEXT PRIMARY KEY,
+    bytes_sha256 TEXT NOT NULL,
     url          TEXT NOT NULL,
     final_url    TEXT NOT NULL,
     fetched_at   TEXT NOT NULL,
     http_status  INTEGER NOT NULL,
     text_sha256  TEXT NOT NULL,
-    session_id   TEXT
+    session_id   TEXT,
+    PRIMARY KEY (bytes_sha256, fetched_at)
 );
 CREATE INDEX IF NOT EXISTS retrievals_url ON retrievals(url);
 CREATE INDEX IF NOT EXISTS retrievals_text ON retrievals(text_sha256);
+"""
+
+# An index made before the key included the time is rebuilt with every row it holds. Run a
+# second time, by a second process that saw the old key in the same moment, it copies the new
+# table into a new table and changes nothing.
+_REKEY = """
+BEGIN IMMEDIATE;
+ALTER TABLE retrievals RENAME TO retrievals_by_bytes;
+CREATE TABLE retrievals (
+    bytes_sha256 TEXT NOT NULL,
+    url          TEXT NOT NULL,
+    final_url    TEXT NOT NULL,
+    fetched_at   TEXT NOT NULL,
+    http_status  INTEGER NOT NULL,
+    text_sha256  TEXT NOT NULL,
+    session_id   TEXT,
+    PRIMARY KEY (bytes_sha256, fetched_at)
+);
+INSERT INTO retrievals SELECT * FROM retrievals_by_bytes;
+DROP TABLE retrievals_by_bytes;
+COMMIT;
 """
 
 
@@ -80,6 +105,14 @@ class Library:
         self.store.mkdir(parents=True, exist_ok=True)
         self.retrievals.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
+            keyed_by = [row[1] for row in db.execute("PRAGMA table_info(retrievals)") if row[5]]
+            if keyed_by == ["bytes_sha256"]:
+                try:
+                    db.executescript(_REKEY)
+                except sqlite3.Error:
+                    # Left as it was. The old index still answers every question but one, and
+                    # a capture is worth more than the history of an earlier one.
+                    db.rollback()
             db.executescript(SCHEMA)
         return self
 
@@ -108,17 +141,25 @@ class Library:
         agent_id: str = "",
         prompt: str = "",
         answer_check: AnswerCheck | None = None,
+        keep_bytes: bool = True,
     ) -> pathlib.Path:
         """Store the bytes and the record, and index the row. Returns the record's path.
+
+        With `keep_bytes` false the bytes are not written, and the record says so. Everything
+        measured of them is still there: both digests, the length, the status, the check of the
+        answer. That is enough to say later whether a page still reads the same, and not enough
+        to read it again.
 
         A record is named by its bytes, so a later fetch that returns the same bytes names the
         same file. Where that file already holds the check of an earlier answer it is left as
         it is, and this answer's check is appended to `answer_checks.jsonl` beside when the
-        bytes came back again. The index row is still replaced, because pacing and `latest`
-        need the time of the most recent fetch.
+        bytes came back again. The index gains a row either way: it holds one a fetch, so
+        `history` shows a page that came back unchanged, and when.
         """
         self.create()
-        (self.store / retrieval.bytes_sha256).write_bytes(retrieval.body)
+        blob = self.store / retrieval.bytes_sha256
+        if keep_bytes:
+            blob.write_bytes(retrieval.body)
         path = self.retrievals / f"{retrieval.bytes_sha256}.yaml"
         earlier = self._checked_record(path)
 
@@ -130,6 +171,9 @@ class Library:
             "content_type": retrieval.content_type,
             "bytes": retrieval.bytes_len,
             "bytes_sha256": retrieval.bytes_sha256,
+            # Whether the bytes were stored with this record, kept now or by an earlier fetch
+            # that returned the same ones. False is a choice made at capture and not a loss.
+            "bytes_kept": blob.is_file(),
             "text_sha256": retrieval.text_sha256,
             "extractor": retrieval.extractor,
             "rendering_method": retrieval.rendering_method,
@@ -158,6 +202,11 @@ class Library:
         if earlier is None:
             path.write_text(yaml.safe_dump(record, sort_keys=False, allow_unicode=True))
         elif answer_check is not None:
+            if earlier.get("bytes_kept") is False and blob.is_file():
+                # The earlier fetch kept no bytes and this one did. That one line of the record
+                # is brought up to date, and the earlier answer's check beside it is untouched.
+                earlier["bytes_kept"] = True
+                path.write_text(yaml.safe_dump(earlier, sort_keys=False, allow_unicode=True))
             self._append_check(
                 retrieval,
                 answer_check,
@@ -182,13 +231,27 @@ class Library:
             )
         return path
 
-    def skip(self, url: str, reason: str, *, session_id: str = "") -> None:
-        """Record a capture that did not happen. Append only."""
+    def skip(self, url: str, reason: str, *, session_id: str = "", agent_id: str = "") -> None:
+        """Record a capture that did not happen. Append only.
+
+        `agent_id` is written where a subagent made the fetch, and left out where none did, so
+        a line from the main agent reads as every line did before subagents were recorded.
+        """
         self.create()
+        line = {"url": url, "reason": reason, "session_id": session_id}
+        if agent_id:
+            line["agent_id"] = agent_id
         with self.skipped_path.open("a") as handle:
-            handle.write(
-                json.dumps({"url": url, "reason": reason, "session_id": session_id}) + "\n"
-            )
+            handle.write(json.dumps(line) + "\n")
+
+    @staticmethod
+    def kept_no_bytes(path: pathlib.Path) -> bool:
+        """Whether a record says its bytes were never stored. False where it cannot be read."""
+        try:
+            record = yaml.safe_load(path.read_text())
+        except (OSError, ValueError, yaml.YAMLError):
+            return False
+        return isinstance(record, dict) and record.get("bytes_kept") is False
 
     @staticmethod
     def _checked_record(path: pathlib.Path) -> dict | None:

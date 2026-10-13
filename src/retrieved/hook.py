@@ -23,6 +23,7 @@ Design constraints, in order, and each one is why a hook survives long enough to
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 
@@ -115,6 +116,29 @@ def _agent(payload: dict) -> str:
     return agent if isinstance(agent, str) else ""
 
 
+#: `$RETRIEVED_KEEP`, which says whose bytes the hook stores. The record, both digests and the
+#: check of the answer are written whichever it is.
+KEEP_ALL = "all"
+KEEP_FLAGGED = "flagged"
+KEEP_NONE = "none"
+
+
+def _keeps(outcome) -> bool:
+    """Whether this capture's bytes are stored, by `$RETRIEVED_KEEP`.
+
+    `all`, which is the default: every page. `flagged`: only a page whose answer quoted a
+    passage it does not hold, which is the page somebody will want to read. `none`: no page.
+    Anything else is read as `all`, because a misspelt setting that silently kept nothing would
+    be found out on the day the bytes were wanted.
+    """
+    keep = os.environ.get("RETRIEVED_KEEP", KEEP_ALL).strip().lower()
+    if keep == KEEP_NONE:
+        return False
+    if keep == KEEP_FLAGGED:
+        return bool(outcome.flagged)
+    return True
+
+
 def _checked(answer, payload: dict, retrieval):
     """The answer in a payload checked against a retrieval, whatever the check does.
 
@@ -196,14 +220,14 @@ def main() -> int:
     try:
         check(url)
     except Refused as refusal:
-        library.skip(refusal.url, refusal.reason, session_id=session)
+        library.skip(refusal.url, refusal.reason, session_id=session, agent_id=agent)
         return 0
 
     try:
         with library.connect() as db:
             politeness.check(db, url, USER_AGENT, session_id=session)
     except politeness.Declined as declined:
-        library.skip(declined.url, declined.reason, session_id=session)
+        library.skip(declined.url, declined.reason, session_id=session, agent_id=agent)
         # Declined is about the request, and the answer is here whether or not one is made. So
         # where the library already holds the page, the answer is checked against that copy
         # with no request at all, and everything written says which copy it was. Where it holds
@@ -236,15 +260,19 @@ def main() -> int:
         with library.connect() as db:
             politeness.record(db, url, session_id=session)
     except Exception as error:  # noqa: BLE001
-        library.skip(url, f"pacing not recorded: {type(error).__name__}", session_id=session)
+        library.skip(
+            url, f"pacing not recorded: {type(error).__name__}", session_id=session, agent_id=agent
+        )
 
     try:
         retrieval = fetch(url)
     except Refused as refusal:
-        library.skip(refusal.url, refusal.reason, session_id=session)
+        library.skip(refusal.url, refusal.reason, session_id=session, agent_id=agent)
         return 0
     except Exception as error:  # noqa: BLE001 - constraint 1 outranks knowing which error
-        library.skip(url, f"fetch failed: {type(error).__name__}", session_id=session)
+        library.skip(
+            url, f"fetch failed: {type(error).__name__}", session_id=session, agent_id=agent
+        )
         return 0
 
     # Checked here, with the page in hand and nobody waiting.
@@ -257,11 +285,12 @@ def main() -> int:
             agent_id=agent,
             prompt=tool_input.get("prompt") or "",
             answer_check=outcome,
+            keep_bytes=_keeps(outcome),
         )
         if outcome.flagged:
             library.flag(retrieval, outcome, session_id=session, agent_id=agent)
     except OSError as error:
-        library.skip(url, f"could not write: {error.strerror}", session_id=session)
+        library.skip(url, f"could not write: {error.strerror}", session_id=session, agent_id=agent)
     return 0
 
 

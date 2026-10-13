@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import sqlite3
@@ -700,3 +701,41 @@ def test_a_copy_time_that_is_not_a_time_never_reaches_a_note(copy_fetched_at):
     }
     assert flags.note(flag).endswith(flags.INDEPENDENT)
     assert "the page as retrieved" in flags.note(flag)
+
+
+@pytest.mark.parametrize(
+    ("keep", "result", "kept"),
+    [
+        (None, ON_THE_PAGE, True),
+        ("all", ON_THE_PAGE, True),
+        ("flagged", ON_THE_PAGE, False),
+        ("flagged", NOT_ON_THE_PAGE, True),
+        ("none", NOT_ON_THE_PAGE, False),
+        (" Flagged ", ON_THE_PAGE, False),
+        # A setting nobody defined keeps everything, so a misspelling loses nothing.
+        ("flaged", ON_THE_PAGE, True),
+    ],
+)
+def test_the_keep_setting_decides_whose_bytes_are_stored_and_never_what_is_recorded(
+    keep, result, kept, home, monkeypatch
+):
+    if keep is None:
+        monkeypatch.delenv("RETRIEVED_KEEP", raising=False)
+    else:
+        monkeypatch.setenv("RETRIEVED_KEEP", keep)
+    assert capture_in_process(monkeypatch, fetched("https://example.com/ferry", result)) == 0
+    record = the_record(home)
+    assert record["bytes_kept"] is kept
+    assert (home / "store" / record["bytes_sha256"]).exists() is kept
+    assert record["bytes_sha256"] == hashlib.sha256(PAGE).hexdigest()
+    assert record["answer_check"]["status"] == ("found" if result is ON_THE_PAGE else "not_found")
+    assert (home / "flags.jsonl").exists() is (result is NOT_ON_THE_PAGE)
+
+
+def test_a_fetch_a_subagent_made_and_the_limiter_declined_names_the_subagent(home, monkeypatch):
+    payload = {**fetched("https://example.com/ferry", ON_THE_PAGE), "agent_id": "a4"}
+    assert capture_in_process(monkeypatch, payload) == 0
+    assert capture_in_process(monkeypatch, payload) == 0
+    (line,) = (json.loads(line) for line in (home / "skipped.jsonl").read_text().splitlines())
+    assert line["reason"].startswith("captured ")
+    assert line["agent_id"] == "a4"
