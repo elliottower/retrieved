@@ -24,7 +24,7 @@ from retrieved.refuse import Refused, check, check_final
 
 #: Sent so an operator can see who is asking and object. A capture tool with an anonymous
 #: user-agent is indistinguishable from a scraper, and deserves to be treated as one.
-USER_AGENT = "retrieved/0.1 (+https://github.com/elliottower/retrieved)"
+USER_AGENT = "retrieved/0.2 (+https://github.com/elliottower/retrieved)"
 
 #: Never stored. A record carrying these is a credential store wearing an evidence store's name.
 SECRET_HEADERS = frozenset({"set-cookie", "authorization", "proxy-authorization", "cookie"})
