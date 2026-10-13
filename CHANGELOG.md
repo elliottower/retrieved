@@ -40,6 +40,13 @@
 - A flag records which subagent's fetch raised it. A subagent is told about its own flags, and
   the main agent about its own and any subagent's.
 - `scripts/backup_to_gcs.sh` copies `flags.jsonl` and `answer_checks.jsonl`.
+- A page served with success that is a check on the browser, a request the server rejected, a
+  demand for cookies or a sign-in page is recognised by what it says, where it holds under
+  2,000 characters of text. Its record carries `wall`, `retrieved capture` prints it, and
+  `retrieved status` counts such records. No passage is looked for in one: the check is
+  `not_run`, and the reason names the wall where it used to say the page held too few
+  characters. Before this a wall of 400 characters or more was searched as though it were the
+  page. Nothing is retried and no request is changed.
 
 ## 0.1.0
 

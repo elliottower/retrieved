@@ -788,7 +788,7 @@ def test_a_long_answer_over_a_page_with_almost_no_text_is_recorded_and_tells_nob
     assert not outcome.flagged
     # Its own measure: no quotation was checked, so none is reported as failing.
     assert outcome.status == NOT_RUN
-    assert "too few to check against" in outcome.reason
+    assert "a sign-in page" in outcome.reason
     assert outcome.not_found == ()
     assert outcome.answer_chars == len(said)
     assert outcome.page_text_chars == len("Sign in Please sign in to continue reading.")

@@ -145,6 +145,19 @@ past answers it fired on 35, and on none was the answer at fault: on 22 the seco
 met a wall the fetch tool did not, on 8 the answer itself said the page was empty, and 5 were
 the fetch tool's notice of a redirect. `retrieved status` counts it on a line of its own.
 
+**A wall served with success** is the case a status cannot show: a check on the browser, a
+request the server rejected, a demand for cookies or a sign-in page, each answered `200`. A page
+holding under 2,000 characters of text that says one of a fixed list of phrases, such as
+`checking your browser` or `request rejected`, is recorded as one, and so is a response whose
+`cf-mitigated` header says the server challenged it. The record carries `wall`, the check is
+`not_run` with `the independent fetch met a check on the browser (the page says "checking your
+browser"), which is not the page the tool read`, and `retrieved status` counts the records.
+Nothing is retried and the request is never dressed as a browser's. Over 1,082 stored pages
+served with success, this named 70, each a wall on reading, and none of the 36 other pages
+holding under 400 characters, which were unfilled shells, stubs, empty documents and error
+pages served with success. A wall that says none of the phrases is still a short page, and is
+`not_run` for that.
+
 **A URL the rate limiter declines** is not fetched, and the answer is still there. Where the
 library already holds a copy of that URL, the answer is checked against the most recent copy
 with no request made. The outcome is one line of `answer_checks.jsonl`, with the digest of the
