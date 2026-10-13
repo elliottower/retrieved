@@ -41,6 +41,14 @@ nobody keeps the page. A store that does is the only forensic record of what was
 caveat that belongs in any such investigation: an attacker serving conditionally, on user agent,
 address or timing, may show the agent an injected page and this library a clean one.
 
+## What the report hook tells the agent
+
+`retrieved-hook --report` puts text into the agent's context, so what that text may contain is
+part of the boundary. A note carries the URL the agent itself fetched, counts, and passages from
+the fetch tool's answer, which the agent has already been given. It never carries text from the
+stored page: the page is untrusted input, and a hook that quoted it would be a second route for
+whatever the page was trying to say.
+
 ## Reporting
 
 Open a GitHub security advisory on the repository. Do not open a public issue for a vulnerability

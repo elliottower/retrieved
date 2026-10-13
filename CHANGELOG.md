@@ -28,3 +28,16 @@ Initial work. Nothing published.
   A render is a request this library makes on its own and an injected client cannot mediate it.
 - The test suite refuses to open a connection, so a path that reaches the network is an error
   rather than a slow test.
+- The hook checks the fetch tool's answer against the page it retrieved. Passages the answer puts
+  in quotation marks are looked for in the page's text, and the record gains an `answer_check`
+  block saying they were all found, which were not, or why nothing was checked. The answer is
+  not stored, only its digest.
+- A long answer over a page with almost no text is recorded as `answer_without_page_text`,
+  separately from quotations.
+- A mismatch is appended to `flags.jsonl`, and `retrieved-hook --report`, registered for every
+  tool, tells the agent once on the session's next tool call. It prints nothing otherwise.
+  `retrieved hook` prints both entries.
+- `retrieved status` reports how many answers were flagged, checked, not checked, and never
+  recorded as either.
+- A record without `answer_check` reads as it did: `verify`, `status`, `promotable` and `promote`
+  treat the block as optional.
