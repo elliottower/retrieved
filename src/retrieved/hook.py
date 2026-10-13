@@ -5,13 +5,19 @@ and a model's answer to whatever prompt accompanied the fetch -- so there is not
 except the URL. This takes that URL and fetches it again, independently, which is why the record
 says what it says: these are the bytes this library retrieved, not the bytes the agent read.
 
+The response does carry the model's answer, and once the page is here the answer can be checked
+against it: the passages it presents as quotations are on the page or they are not. The outcome
+goes into the record. `retrieved-hook --report`, registered for every tool, is how a mismatch
+reaches the agent, because the capture is detached and has nobody to tell by the time it knows.
+
 Design constraints, in order, and each one is why a hook survives long enough to be useful:
 
 1. Never break the session. Every failure exits 0 in silence.
 2. Never block. `PostToolUse` cannot deny a call, so refusals here are records, not preventions.
    Anything that must not happen at all belongs in a `PreToolUse` guard.
-3. Say nothing. A hook that prints on every fetch is noise, and noise gets uninstalled. Failures
-   and refusals go to `skipped.jsonl`, where they can be read on purpose.
+3. Say nothing, unless an answer did not match its page, and then say it once. A hook that
+   prints on every fetch is noise, and noise gets uninstalled. Failures and refusals go to
+   `skipped.jsonl`, where they can be read on purpose.
 """
 
 from __future__ import annotations
@@ -19,6 +25,10 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+
+# Standard library only, by that module's own first constraint, so importing it here costs the
+# fast path nothing and cannot fail on an installation missing a dependency.
+from retrieved import flags
 
 MAX_STDIN = 4 * 1024 * 1024
 
@@ -51,7 +61,64 @@ def _detach() -> int:
     return 0
 
 
+def _report() -> int:
+    """Tell the agent about answers that did not match their pages, once each, or say nothing.
+
+    Runs after every tool call, so it does as little as it can: read the payload, read one small
+    file, and print only where this session has a flag nobody has been told about. The shape is
+    the one Claude Code reads from a `PostToolUse` hook, `hookSpecificOutput.additionalContext`,
+    which reaches the agent beside the tool result and is not shown as a message.
+    """
+    try:
+        payload = json.loads(sys.stdin.read(MAX_STDIN))
+    except (ValueError, OSError):
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    session = payload.get("session_id")
+    cwd = payload.get("cwd")
+    if not isinstance(session, str):
+        return 0
+
+    try:
+        root = flags.library_root(pathlib.Path(cwd) if isinstance(cwd, str) and cwd else None)
+        notes = flags.undelivered(root, session)
+    except Exception:  # noqa: BLE001 - constraint 1 outranks knowing which error
+        return 0
+    if not notes:
+        return 0
+
+    # The event name is echoed rather than assumed, because the field is required to name the
+    # event the hook ran for and this may be registered on more than one.
+    event = payload.get("hook_event_name")
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": event if isinstance(event, str) and event else "PostToolUse",
+                    "additionalContext": "\n".join(notes),
+                }
+            }
+        )
+    )
+    return 0
+
+
+def _answer(payload: dict) -> object:
+    """The fetch tool's answer, or None where the payload does not hold one.
+
+    `tool_response` has been seen as an object with a `result`. Anything else -- a bare string,
+    a list, nothing -- is a shape this was not measured against, and guessing which part of it
+    is the answer would check a quotation against text nobody claimed was one.
+    """
+    response = payload.get("tool_response")
+    return response.get("result") if isinstance(response, dict) else None
+
+
 def main() -> int:
+    if "--report" in sys.argv:
+        return _report()
+
     # A PostToolUse hook runs synchronously: the session waits for it. Fetching inline therefore
     # adds a second HTTP round-trip to every fetch the agent makes, and a hanging page stalls the
     # editing session for the whole timeout. So the default is to hand the payload to a detached
@@ -81,7 +148,7 @@ def main() -> int:
     # missing a dependency must produce a silent no-op rather than an exception in someone's
     # editing session. Everything above this line runs on the standard library alone.
     try:
-        from retrieved import politeness
+        from retrieved import answer, politeness
         from retrieved.capture import USER_AGENT, fetch
         from retrieved.refuse import Refused, check
         from retrieved.store import Library
@@ -133,8 +200,23 @@ def main() -> int:
         library.skip(url, f"fetch failed: {type(error).__name__}", session_id=session)
         return 0
 
+    # Checked here, with the page in hand and nobody waiting. A check that fails is recorded as
+    # one that did not run, with why: it must not cost the capture, and it must not leave a
+    # record that reads as though nothing was wrong.
     try:
-        library.write(retrieval, session_id=session, prompt=tool_input.get("prompt") or "")
+        outcome = answer.check(_answer(payload), retrieval)
+    except Exception as error:  # noqa: BLE001 - constraint 1 outranks knowing which error
+        outcome = answer.AnswerCheck(answer.NOT_RUN, reason=f"check failed: {type(error).__name__}")
+
+    try:
+        library.write(
+            retrieval,
+            session_id=session,
+            prompt=tool_input.get("prompt") or "",
+            answer_check=outcome,
+        )
+        if outcome.flagged:
+            library.flag(retrieval, outcome, session_id=session)
     except OSError as error:
         library.skip(url, f"could not write: {error.strerror}", session_id=session)
     return 0

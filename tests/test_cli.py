@@ -11,7 +11,7 @@ import sqlite3
 import httpx
 import pytest
 
-from retrieved import capture, cli, politeness
+from retrieved import answer, capture, cli, politeness
 from retrieved.store import Library
 
 
@@ -152,6 +152,15 @@ def test_hook_prints_a_configuration_that_parses(capsys):
     assert config["hooks"]["PostToolUse"][0]["matcher"] == "WebFetch"
 
 
+def test_hook_prints_the_entry_that_reports_beside_the_one_that_captures(capsys):
+    cli.main(["hook"])
+    printed = capsys.readouterr().out
+    capturing, reporting = json.loads(printed[: printed.index("\n\n")])["hooks"]["PostToolUse"]
+    assert capturing["hooks"] == [{"type": "command", "command": "retrieved-hook"}]
+    assert reporting["matcher"] == "*"
+    assert reporting["hooks"] == [{"type": "command", "command": "retrieved-hook --report"}]
+
+
 def test_no_command_prints_help_rather_than_failing(capsys):
     assert cli.main([]) == 0
     assert "usage" in capsys.readouterr().out.lower()
@@ -252,3 +261,76 @@ def test_what_a_block_wrote_is_committed_by_the_time_it_ends(home):
             "'2026-01-01T00:00:00+00:00',200,'t','')"
         )
     assert library.history("https://e.example/")
+
+
+MINUTES = (
+    b"<html><body><p>The committee met on the second Tuesday of the month in the upstairs "
+    b"room of the library, with eleven members present and two apologies received.</p>"
+    b"<p>It agreed to repair the clock on the east wall before the winter, at a cost not to "
+    b"exceed three hundred pounds, and to ask the school to paint the railings.</p>"
+    b"<p>The treasurer reported a balance of four hundred and twelve pounds, and the meeting "
+    b"closed at nine with a vote of thanks to the chair.</p></body></html>"
+)
+
+
+def checked_capture(n, said):
+    def handler(request):
+        return httpx.Response(
+            200, content=MINUTES + f"<!--{n}-->".encode(), headers={"content-type": "text/html"}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as c:
+        r = capture.fetch(f"https://example.com/minutes/{n}", client=c)
+    library = Library.resolve().create()
+    outcome = answer.check(said, r)
+    library.write(r, session_id="s1", answer_check=outcome)
+    if outcome.flagged:
+        library.flag(r, outcome, session_id="s1")
+
+
+def test_status_reports_flags_and_how_many_answers_were_and_were_not_checked(
+    home, monkeypatch, capsys
+):
+    checked_capture(1, 'It agreed "to repair the clock on the east wall before the winter".')
+    checked_capture(2, 'It agreed "to replace the clock on the east wall before the winter".')
+    checked_capture(3, "It agreed to repair a clock.")
+    serve(monkeypatch)
+    cli.main(["capture", "https://example.org/by-hand"])
+    capsys.readouterr()
+
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "answers   1 flagged   2 checked   1 not run   1 with no check recorded" in out
+    assert "captured  4" in out
+
+
+def test_status_counts_no_flags_in_a_library_that_predates_them(home, monkeypatch, capsys):
+    serve(monkeypatch)
+    cli.main(["capture", "https://example.com/"])
+    capsys.readouterr()
+    assert cli.main(["status"]) == 0
+    assert "answers   0 flagged   0 checked   0 not run   1 with no check recorded" in (
+        capsys.readouterr().out
+    )
+
+
+def test_records_with_and_without_an_answer_check_verify_and_promote_alike(
+    home, monkeypatch, tmp_path, capsys
+):
+    def handler(request):
+        return httpx.Response(200, content=MINUTES, headers={"content-type": "text/html"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as c:
+        r = capture.fetch("https://arxiv.org/abs/2211.00593", client=c)
+    library = Library.resolve().create()
+    said = 'It agreed "to replace the clock on the east wall before the winter".'
+    library.write(r, answer_check=answer.check(said, r))
+    serve(monkeypatch)
+    cli.main(["capture", "https://arxiv.org/abs/2310.02207"])
+    capsys.readouterr()
+
+    assert cli.main(["verify"]) == 0
+    assert "2 retrievals   2 intact   0 missing   0 altered" in capsys.readouterr().out
+    assert cli.main(["promotable"]) == 0
+    assert "2 of 2 retrievals name a work" in capsys.readouterr().out
+    assert cli.main(["promote", r.bytes_sha256, "--into", str(tmp_path / "citations")]) == 0

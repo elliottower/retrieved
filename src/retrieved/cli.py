@@ -6,7 +6,8 @@
     retrieved history <url>   every capture of one URL, and where the reading changed
     retrieved promotable      which captures name a work a bibliography could hold
     retrieved promote <d>     put one of them into a citation library
-    retrieved hook            the configuration that captures fetches automatically
+    retrieved hook            the configuration that captures fetches automatically, and
+                              tells the agent when an answer did not match its page
 
 `verify` checks the store against itself, not the store against the web. Whether a page still
 says what it said is `history`, and it is only answerable for URLs captured more than once --
@@ -20,7 +21,7 @@ import hashlib
 import json
 import pathlib
 
-from retrieved import politeness
+from retrieved import flags, politeness
 from retrieved.capture import USER_AGENT, fetch
 from retrieved.promote import CannotPromote, candidates, promote
 from retrieved.refuse import Refused
@@ -33,7 +34,13 @@ HOOK_CONFIG = {
             {
                 "matcher": "WebFetch",
                 "hooks": [{"type": "command", "command": "retrieved-hook"}],
-            }
+            },
+            # Every tool, because the capture is detached: a mismatch is known a moment after the
+            # fetch returned, and is delivered on whichever call the session makes next.
+            {
+                "matcher": "*",
+                "hooks": [{"type": "command", "command": "retrieved-hook --report"}],
+            },
         ]
     }
 }
@@ -129,6 +136,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"  library   {library.root}")
     print(f"  captured  {stored}")
     print(f"  declined  {skipped}   (denylist or rate limit; see skipped.jsonl)")
+    ran, not_run, absent = library.answer_checks()
+    print(
+        f"  answers   {len(flags.raised(library.root))} flagged   {ran} checked   "
+        f"{not_run} not run   {absent} with no check recorded   (see flags.jsonl)"
+    )
     if drifted:
         print(f"\n  {len(drifted)} URLs read differently on a later fetch:")
         for url, fetches, readings in drifted[:10]:
@@ -195,9 +207,12 @@ def cmd_promote(args: argparse.Namespace) -> int:
 
 def cmd_hook(args: argparse.Namespace) -> int:
     print(json.dumps(HOOK_CONFIG, indent=2))
-    print("\n  Add the PostToolUse entry to ~/.claude/settings.json.")
-    print("  It captures pages the agent fetches; it never blocks a fetch, because")
+    print("\n  Add both PostToolUse entries to ~/.claude/settings.json.")
+    print("  The first captures pages the agent fetches; it never blocks a fetch, because")
     print("  PostToolUse cannot. Refusals are recorded in skipped.jsonl.")
+    print("  The second tells the agent, once, when a fetch answer quoted a passage the")
+    print("  retrieved page does not hold. It prints nothing otherwise, and without it")
+    print("  the check still runs and is recorded.")
     return 0
 
 

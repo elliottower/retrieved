@@ -11,6 +11,7 @@ already right: bytes addressed by their digest.
         retrievals/<bytes_sha256>.yaml the record
         index.db                      one row per retrieval, so questions are queries
         skipped.jsonl                 what was not captured, and why
+        flags.jsonl                   answers that did not match the page they were about
 
 `skipped.jsonl` is not an afterthought. A capture refused by the denylist or a rate limit is a
 thing that did not happen, and a store that records only successes reports the same silence for
@@ -20,17 +21,17 @@ thing that did not happen, and a store that records only successes reports the s
 from __future__ import annotations
 
 import contextlib
+import datetime
 import json
-import os
 import pathlib
 import sqlite3
 from collections.abc import Iterator
 
 import yaml
 
+from retrieved.answer import FOUND, NOT_FOUND, NOT_RUN, AnswerCheck
 from retrieved.capture import Retrieval
-
-DEFAULT_DIRNAME = ".retrieved"
+from retrieved.flags import FLAGS_NAME, library_root
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS retrievals (
@@ -61,17 +62,13 @@ class Library:
         self.retrievals = root / "retrievals"
         self.index_path = root / "index.db"
         self.skipped_path = root / "skipped.jsonl"
+        self.flags_path = root / FLAGS_NAME
 
     @classmethod
     def resolve(cls, start: pathlib.Path | None = None) -> Library:
-        if home := os.environ.get("RETRIEVED_HOME"):
-            return cls(pathlib.Path(home).expanduser().resolve())
-        here = (start or pathlib.Path.cwd()).resolve()
-        for directory in [here, *here.parents]:
-            candidate = directory / DEFAULT_DIRNAME
-            if candidate.is_dir():
-                return cls(candidate)
-        return cls(here / DEFAULT_DIRNAME)
+        # The walk itself lives in `flags`, the one module the report hook can afford to import.
+        # Two copies of it would be two answers to which library a session belongs to.
+        return cls(library_root(start))
 
     def create(self) -> Library:
         self.store.mkdir(parents=True, exist_ok=True)
@@ -98,7 +95,12 @@ class Library:
             db.close()
 
     def write(
-        self, retrieval: Retrieval, *, session_id: str = "", prompt: str = ""
+        self,
+        retrieval: Retrieval,
+        *,
+        session_id: str = "",
+        prompt: str = "",
+        answer_check: AnswerCheck | None = None,
     ) -> pathlib.Path:
         """Store the bytes and the record, and index the row. Returns the record's path."""
         self.create()
@@ -127,6 +129,11 @@ class Library:
                 "fetched_at, not necessarily the bytes any agent saw."
             ),
         }
+        # Present only where there was an answer to check: a capture made by hand has none. So a
+        # record without the block was never checked, which is a third thing beside "checked" and
+        # "could not be checked", and every record written before the check existed says it too.
+        if answer_check is not None:
+            record["answer_check"] = answer_check.as_record()
         path = self.retrievals / f"{retrieval.bytes_sha256}.yaml"
         path.write_text(yaml.safe_dump(record, sort_keys=False, allow_unicode=True))
 
@@ -152,6 +159,53 @@ class Library:
             handle.write(
                 json.dumps({"url": url, "reason": reason, "session_id": session_id}) + "\n"
             )
+
+    def flag(self, retrieval: Retrieval, check: AnswerCheck, *, session_id: str = "") -> None:
+        """Record an answer that did not match the page it was about. Append only.
+
+        One line carries everything the note to the agent is built from, so the hook that
+        delivers it reads this file and nothing else.
+        """
+        self.create()
+        with self.flags_path.open("a") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+                        "session_id": session_id,
+                        "url": retrieval.url,
+                        "bytes_sha256": retrieval.bytes_sha256,
+                        "http_status": retrieval.http_status,
+                        "not_found": check.as_record()["not_found"],
+                        "answer_without_page_text": check.answer_without_page_text,
+                        "answer_chars": check.answer_chars,
+                        "page_text_chars": check.page_text_chars,
+                    }
+                )
+                + "\n"
+            )
+
+    def answer_checks(self) -> tuple[int, int, int]:
+        """How many records had the answer check run, not run, and not recorded at all.
+
+        A record that cannot be read counts with the last: this is a survey, and one damaged
+        file must not end it.
+        """
+        ran = not_run = absent = 0
+        for path in self.retrievals.glob("*.yaml"):
+            try:
+                block = yaml.safe_load(path.read_text()).get("answer_check")
+                status = block.get("status")
+            except (OSError, ValueError, yaml.YAMLError, AttributeError):
+                absent += 1
+                continue
+            if status == NOT_RUN:
+                not_run += 1
+            elif status in (FOUND, NOT_FOUND):
+                ran += 1
+            else:
+                absent += 1
+        return ran, not_run, absent
 
     def history(self, url: str) -> list[tuple[str, str, str]]:
         """Every retrieval of a URL: when, and both digests. This is what an index buys."""
