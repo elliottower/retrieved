@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import sqlite3
+import time
 import urllib.robotparser
 from urllib.parse import urlsplit
 
@@ -108,12 +109,28 @@ def _robots_for(
     return parser
 
 
-def check(db: sqlite3.Connection, url: str, user_agent: str, session_id: str = "") -> None:
+def check(
+    db: sqlite3.Connection,
+    url: str,
+    user_agent: str,
+    session_id: str = "",
+    *,
+    wait: float = 0.0,
+    sleep=None,
+) -> None:
     """Raise `Declined` where this capture should not be made now. Silence means proceed.
 
     Called before the fetch and after the denylist, which answers a different question: the
     denylist is about what must never be requested, this is about what should not be requested
     yet, or again, or by this session.
+
+    `wait` is how many seconds the caller is willing to be held for the host's interval. The
+    default is none, and a request too soon after the last is declined. With a wait, a request
+    whose turn comes within it takes that turn: the time is written down as the host's last
+    fetch before this sleeps, so a second caller arriving meanwhile queues behind it and does
+    not find the same gap free. A turn further off than the wait is declined as before. Only
+    the interval is waited out. The session cap, a recent capture of the same URL and a
+    robots.txt that disallows the path are answers that time does not change soon.
     """
     db.executescript(SCHEMA)
     parts = urlsplit(url)
@@ -147,19 +164,47 @@ def check(db: sqlite3.Connection, url: str, user_agent: str, session_id: str = "
         if published:
             delay = max(delay, float(published))
 
+    # Read and written under one lock. Each hook invocation is its own process, and several
+    # fetches of one host made in the same moment would otherwise each read the same last
+    # fetch, each find the interval passed, and all go at once.
+    db.commit()
+    db.execute("BEGIN IMMEDIATE")
     row = db.execute("SELECT last_fetch FROM host_state WHERE host = ?", (host,)).fetchone()
-    if row and row[0] and _now() - row[0] < delay:
-        waited = _now() - row[0]
-        raise Declined(url, f"{host} fetched {waited:.1f}s ago, minimum interval {delay:.0f}s")
+    now = _now()
+    turn = max(now, row[0] + delay) if row and row[0] else now
+    if turn - now > wait:
+        db.rollback()
+        since = now - row[0]
+        if since < 0:
+            # The last fetch on record is a turn another caller has taken and not yet used.
+            raise Declined(
+                url,
+                f"{host} has requests waiting their turn for {turn - now:.0f}s, minimum "
+                f"interval {delay:.0f}s",
+            )
+        raise Declined(url, f"{host} fetched {since:.1f}s ago, minimum interval {delay:.0f}s")
+    db.execute(
+        "INSERT INTO host_state (host, last_fetch) VALUES (?,?) "
+        "ON CONFLICT(host) DO UPDATE SET last_fetch=excluded.last_fetch",
+        (host, turn),
+    )
+    db.commit()
+    if turn > now:
+        (sleep or time.sleep)(turn - now)
 
 
 def record(db: sqlite3.Connection, url: str, session_id: str = "") -> None:
-    """Note that a request was made, so the next call to `check` can pace against it."""
+    """Note that a request was made, so the next call to `check` can pace against it.
+
+    Never moves a host's last fetch backwards: where a later caller has already taken a turn
+    after this one, that turn stands.
+    """
     db.executescript(SCHEMA)
     host = (urlsplit(url).hostname or "").lower()
     db.execute(
         "INSERT INTO host_state (host, last_fetch) VALUES (?,?) "
-        "ON CONFLICT(host) DO UPDATE SET last_fetch=excluded.last_fetch",
+        "ON CONFLICT(host) DO UPDATE SET "
+        "last_fetch=MAX(COALESCE(host_state.last_fetch, 0), excluded.last_fetch)",
         (host, _now()),
     )
     if session_id:

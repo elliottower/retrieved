@@ -21,11 +21,9 @@ import hashlib
 import json
 import pathlib
 
-from retrieved import flags, politeness, wall
-from retrieved.capture import USER_AGENT, fetch
+from retrieved import api, flags, politeness
 from retrieved.promote import CannotPromote, candidates, promote
 from retrieved.refuse import Refused
-from retrieved.refuse import check as denylist
 from retrieved.store import Library
 
 HOOK_CONFIG = {
@@ -46,53 +44,31 @@ HOOK_CONFIG = {
 }
 
 
-def _refused(library: Library, refusal: Refused) -> int:
-    library.skip(refusal.url, refusal.reason)
-    print(f"  refused  {refusal.url}\n           {refusal.reason}")
-    return 1
-
-
 def cmd_capture(args: argparse.Namespace) -> int:
     library = Library.resolve().create()
-
-    # The denylist first, and pacing second. They answer different questions -- what must never be
-    # requested, then what should not be requested yet -- and in the other order a URL that will
-    # never be fetched still spends a slot against the session cap. A session working against a
-    # local server would exhaust its budget on requests that never happened.
+    # `api.capture` asks the denylist, then the rate limiter, and records either refusal. The
+    # same pacing the hook applies: a script calling this in a loop is exactly the burst the
+    # limits exist to prevent, and `--now` passes the limiter and never the denylist.
     try:
-        denylist(args.url)
+        captured = api.capture(
+            args.url, library=library, prompt=args.prompt or "", pace=not args.now
+        )
     except Refused as refusal:
-        return _refused(library, refusal)
-
-    # The same pacing the hook applies. A rate limit that depends on which entry point was used
-    # is not a rate limit: a script calling `retrieved capture` in a loop is exactly the burst
-    # these limits exist to prevent, and it would have gone straight past them.
-    if not args.now:
-        try:
-            with library.connect() as db:
-                politeness.check(db, args.url, USER_AGENT)
-        except politeness.Declined as declined:
-            library.skip(declined.url, declined.reason)
-            print(f"  declined {declined.url}\n           {declined.reason}")
-            print("           --now captures anyway")
-            return 1
-    with library.connect() as db:
-        politeness.record(db, args.url)
-
-    # Checked again inside `fetch`, against the URL redirects actually reached.
-    try:
-        retrieval = fetch(args.url)
-    except Refused as refusal:
-        return _refused(library, refusal)
-    path = library.write(retrieval, prompt=args.prompt or "")
+        print(f"  refused  {refusal.url}\n           {refusal.reason}")
+        return 1
+    except politeness.Declined as declined:
+        print(f"  declined {declined.url}\n           {declined.reason}")
+        print("           --now captures anyway")
+        return 1
+    retrieval = captured.retrieval
     print(f"  captured {retrieval.final_url}")
     print(f"    status {retrieval.http_status}   {retrieval.bytes_len} bytes")
     print(f"    bytes  {retrieval.bytes_sha256[:16]}")
     print(f"    text   {retrieval.text_sha256[:16]}   {retrieval.extractor}")
-    print(f"    record {path.relative_to(library.root.parent)}")
-    if met := wall.recognise(retrieval):
+    print(f"    record {captured.record.relative_to(library.root.parent)}")
+    if captured.wall:
         # Said here because nothing above does: the status is a success and the bytes are kept.
-        print(f"    wall   {met}")
+        print(f"    wall   {captured.wall}")
         print("           this is not the page at that address")
     return 0
 

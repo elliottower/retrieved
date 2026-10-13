@@ -2,7 +2,7 @@ import httpx
 import pytest
 import yaml
 
-from retrieved import cli
+from retrieved import api, cli
 from retrieved.answer import NOT_FOUND, NOT_RUN, check
 from retrieved.capture import fetch
 from retrieved.store import Library
@@ -158,7 +158,7 @@ def test_the_record_and_the_commands_say_a_capture_is_a_wall(tmp_path, monkeypat
         capsys.readouterr().out
     )
 
-    monkeypatch.setattr(cli, "fetch", lambda url: wall)
+    monkeypatch.setattr(api, "fetch", lambda url: wall)
     assert cli.main(["capture", "https://example.com/minutes", "--now"]) == 0
     out = capsys.readouterr().out
     assert 'wall   a check on the browser (the page says "checking your browser")' in out

@@ -879,3 +879,125 @@ def test_half_a_surrogate_pair_in_the_answer_cannot_raise():
     outcome = check(said, a_page())
     assert outcome.status == NOT_FOUND
     assert outcome.as_record()["not_found"][0].encode()
+
+
+def a_listing(fragment, ctype="text/html"):
+    filler = "<p>The archive keeps a listing of every paper it has received since 1991.</p>" * 8
+    return a_page(body=f"<html><body>{filler}{fragment}</body></html>".encode(), ctype=ctype)
+
+
+@pytest.mark.parametrize(
+    ("typed", "quoted"),
+    [
+        (
+            r"agreement was low ($\kappa = 0.36$) across the forty raters",
+            "agreement was low (κ = 0.36) across the forty raters",
+        ),
+        (
+            r"agreement was low ($\kappa=0.36$) across the forty raters",
+            "agreement was low (κ = 0.36) across the forty raters",
+        ),
+        (
+            r"a matrix of models versus benchmarks \((60\times44)\) in all",
+            "a matrix of models versus benchmarks (60×44) in all",
+        ),
+        (
+            r"a sample of $N{=}1{,}918$ answers from the forty raters",
+            "a sample of N=1,918 answers from the forty raters",
+        ),
+        (
+            r"in $67\%$ of the cases that the forty raters looked at",
+            "in 67% of the cases that the forty raters looked at",
+        ),
+        (
+            r"the rank correlation $\tau_b=.900$ held for the forty raters",
+            "the rank correlation τ_b=.900 held for the forty raters",
+        ),
+        (
+            r"the rank correlation $\tau_b=.900$ held for the forty raters",
+            "the rank correlation τb=.900 held for the forty raters",
+        ),
+        (
+            r"a mean of $\bar{\rho} = 0.8$ across the forty raters",
+            "a mean of ρ = 0.8 across the forty raters",
+        ),
+        (
+            r"significant at $p &lt; 10^{-100}$ for the forty raters",
+            "significant at p < 10⁻¹⁰⁰ for the forty raters",
+        ),
+    ],
+)
+def test_a_formula_typed_as_tex_is_found_as_the_characters_it_renders_to(typed, quoted):
+    page = a_listing(f"<blockquote>{typed}</blockquote>")
+    assert check(f'The abstract says "{quoted}" there.', page).status == FOUND
+
+
+def test_rendering_tex_never_lets_a_different_number_through():
+    page = a_listing(
+        r"<blockquote>agreement was low ($\kappa = 0.36$) across the raters</blockquote>"
+    )
+    said = 'The abstract says "agreement was low (κ = 0.63) across the raters" there.'
+    assert check(said, page).status == NOT_FOUND
+
+
+def test_a_command_this_does_not_know_is_left_as_typed_and_the_passage_is_not_found():
+    page = a_listing(
+        r"<blockquote>the bound is $\aleph_0$ for every one of the raters</blockquote>"
+    )
+    assert check('It says "the bound is ℵ0 for every one of the raters".', page).status == NOT_FOUND
+    assert extract._tex_rendered(r"$\aleph_0$ and $\kappa$") == r"\aleph_0 and κ"
+
+
+def test_a_feed_carrying_tex_is_read_the_same_way():
+    feed = (
+        "<feed><entry><title>A performance matrix of models versus benchmarks "
+        r"\((60\times44)\) and what its rank says of the forty raters</title></entry>"
+        + "<entry><summary>Nothing else of note in this feed today.</summary></entry>" * 12
+        + "</feed>"
+    ).encode()
+    said = 'Its title is "A performance matrix of models versus benchmarks (60×44)" in full.'
+    assert check(said, a_page(body=feed, ctype="application/atom+xml")).status == FOUND
+
+
+FOOTNOTED = (
+    "<p>The set contains 303,358 stories written by users of <span>the forum"
+    '<span class="ltx_note ltx_role_footnote"><sup class="ltx_note_mark">1</sup>'
+    '<span class="ltx_note_outer"><span class="ltx_note_content"><sup>1</sup> '
+    '<a href="https://forum.example/">https://forum.example/</a></span></span></span></span>'
+    " in response to 97,222 prompts.</p>"
+)
+
+
+def test_a_footnote_set_inside_a_sentence_does_not_split_the_sentence():
+    said = (
+        'It "contains 303,358 stories written by users of the forum in response to 97,222 prompts".'
+    )
+    assert check(said, a_listing(FOOTNOTED)).status == FOUND
+    # The note's own words are still the page's: every other reading keeps them.
+    assert check('The footnote gives "https://forum.example/ in response".', a_listing(FOOTNOTED))
+
+
+def test_what_a_link_says_to_a_screen_reader_is_not_part_of_the_sentence_it_is_in():
+    linked = (
+        '<p>Charges are waived for authors from 69 countries (<a aria-label="Group A opens in '
+        'new tab/window"><span>Group A<span><svg><path d="M5"></path></svg></span></span>'
+        '<span class="_13sjisp0">opens in new tab/window</span></a>) and halved for 57 more, '
+        'as the <a>price list<span class="sr-only">external link</span></a> shows.</p>'
+    )
+    page = a_listing(linked)
+    for said in (
+        'It says "waived for authors from 69 countries (Group A) and halved for 57 more".',
+        'It says "halved for 57 more, as the price list shows" too.',
+    ):
+        assert check(said, page).status == FOUND
+    wrong = 'It says "waived for authors from 96 countries (Group A) and halved for 57 more".'
+    assert check(wrong, page).status == NOT_FOUND
+
+
+def test_an_element_left_open_is_closed_by_whatever_closes_next_and_costs_no_passage():
+    page = a_listing("<p>The first<sup>1 keeper retired to the mainland with his two dogs.</p>")
+    # Whatever closes next closes it, so the reading loses the note's words and no others.
+    assert extract._without_asides("<p>a<sup>1 b</p> c").split() == ["a", "c"]
+    assert (
+        check('It says "keeper retired to the mainland with his two dogs".', page).status == FOUND
+    )

@@ -58,6 +58,22 @@
   `retrieved capture` always keeps the bytes.
 - A line of `skipped.jsonl` names the subagent whose fetch it was, where one made it.
 
+- `retrieved.api.capture(url)` is one call for a program that imports this library: the
+  denylist, the rate limiter, the request and the record, in that order. `retrieved capture`
+  is now that call.
+- The rate limiter can wait for a host's turn. `politeness.check(..., wait=seconds)` takes the
+  turn where it comes within the wait and declines where it does not, and writes the turn down
+  before sleeping, so callers started together queue. The hook's worker waits up to 30 seconds;
+  it declined a second page of one host before, and that page's answer went unchecked. The
+  command still declines.
+- The index key is the bytes' digest, the URL and the time. Two addresses answering with the
+  same bytes in the same second shared a row under the key of digest and time. An index under
+  either earlier key is rebuilt with every row it holds.
+- A formula a page carries as TeX is also read as the characters it renders to, by a closed
+  table. A footnote set inside a sentence, text for a screen reader and a link's `opens in new
+  tab` are left out of one reading of an HTML page. Each is a reading beside the others. Of 14
+  faithful passages reported missing over 1,407 past answers, 8 are now found.
+
 ## 0.1.0
 
 - `retrieved capture` fetches a URL independently, stores the bytes, and records two digests: one

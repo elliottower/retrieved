@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from html.parser import HTMLParser
 
 from retrieved.capture import Retrieval, normalize
 
@@ -47,9 +48,96 @@ _ANNOTATION = re.compile(r"<annotation\b.*?</annotation(?:-xml)?>", re.S | re.I)
 _CDATA = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.S)
 # TeX that only sets type: `\textbf{six models}` is the words `six models`. A listing or a
 # feed carries an abstract as its author wrote it, and a reader of the rendered page quotes the
-# words. Formulas are left alone: turning `\rho` into a letter is rendering, not stripping.
+# words. Formulas are left alone here, and read by `_tex_rendered` as a reading of their own.
 _TEX_TYPE = re.compile(r"\\(?:textbf|textit|texttt|textsc|textrm|emph|text)\s*\{([^{}]*)\}")
 _VERSION = re.compile(r"version\s+(\S+)")
+
+# TeX a reader of the rendered page sees as a character. An abstract in a listing or a feed is
+# the TeX its author typed, `$\\kappa = 0.36$`, and an answer written from the rendered page
+# says `κ = 0.36`. The table is closed and each entry is one command for one character, so this
+# is transliteration and decides nothing: a command not listed stays as it was typed, and no
+# digit, letter or sign of the text is touched.
+_TEX_CHARACTERS = {
+    "alpha": "α",
+    "beta": "β",
+    "gamma": "γ",
+    "delta": "δ",
+    "epsilon": "ε",
+    "varepsilon": "ε",
+    "zeta": "ζ",
+    "eta": "η",
+    "theta": "θ",
+    "vartheta": "θ",
+    "iota": "ι",
+    "kappa": "κ",
+    "lambda": "λ",
+    "mu": "μ",
+    "nu": "ν",
+    "xi": "ξ",
+    "pi": "π",
+    "rho": "ρ",
+    "sigma": "σ",
+    "tau": "τ",
+    "upsilon": "υ",
+    "phi": "φ",
+    "varphi": "φ",
+    "chi": "χ",
+    "psi": "ψ",
+    "omega": "ω",
+    "Gamma": "Γ",
+    "Delta": "Δ",
+    "Theta": "Θ",
+    "Lambda": "Λ",
+    "Xi": "Ξ",
+    "Pi": "Π",
+    "Sigma": "Σ",
+    "Phi": "Φ",
+    "Psi": "Ψ",
+    "Omega": "Ω",
+    "times": "×",
+    "cdot": "·",
+    "pm": "±",
+    "approx": "≈",
+    "sim": "~",
+    "le": "≤",
+    "leq": "≤",
+    "ge": "≥",
+    "geq": "≥",
+    "ne": "≠",
+    "neq": "≠",
+    "to": "→",
+    "rightarrow": "→",
+    "leftarrow": "←",
+    "infty": "∞",
+    "ell": "ℓ",
+}
+# Commands that set how their argument looks and add no character of their own.
+_TEX_STYLES = frozenset(
+    {"bar", "hat", "tilde", "vec", "mathbf", "mathrm", "mathit", "mathcal", "mathbb"}
+    | {"boldsymbol", "operatorname", "text", "textrm", "mathsf", "left", "right"}
+)
+_TEX_COMMAND = re.compile(r"\\([A-Za-z]+)")
+# An escaped character is the character, and a spacing command is nothing a reader sees.
+_TEX_ESCAPED = re.compile(r"\\([%&$#_])")
+_TEX_SPACING = re.compile(r"\\[,;:!]")
+# What delimits or groups a formula: `$`, `\(` and its like, braces, and the caret of a
+# superscript, which an answer writes as a raised character or as nothing.
+_TEX_DELIMITERS = re.compile(r"\\[()\[\]]|[${}^]")
+
+# Text a page holds beside a sentence and a reader does not read as part of it: a footnote's
+# marker and its note, and words written for a screen reader. Named by the element or by a class
+# that says so. A class a site invented says nothing, and its text stays.
+_VOID = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source"}
+    | {"track", "wbr"}
+)
+_ASIDE_ELEMENTS = frozenset({"sup", "script", "style", "svg"})
+_ASIDE_CLASSES = frozenset(
+    {"sr-only", "is-sr-only", "visually-hidden", "visuallyhidden", "screen-reader-text"}
+    | {"ltx_note", "footnote", "footnote-ref"}
+)
+# What a link says to a screen reader about itself, set inside the sentence the link is in.
+_ANNOUNCED = re.compile(r"\(?opens in (?:a )?new (?:tab|window)(?:/window| or window)?\)?", re.I)
 
 
 @dataclass(frozen=True)
@@ -99,6 +187,66 @@ def _without_tex_type(text: str) -> str:
     return _TEX_TYPE.sub(r"\1", text).replace("$", "")
 
 
+def _tex_rendered(text: str) -> str:
+    """Text with the TeX of its formulas written as the characters a rendered page shows.
+
+    `$\\kappa = 0.36$` reads `κ = 0.36`, `\\((60\\times44)\\)` reads `(60×44)` and
+    `$N{=}1{,}918$` reads `N=1,918`. A reading beside the others and never in place of one.
+    """
+
+    def character(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in _TEX_STYLES:
+            return ""
+        return _TEX_CHARACTERS.get(name, match.group(0))
+
+    text = _TEX_SPACING.sub("", _TEX_ESCAPED.sub(r"\1", text))
+    return _TEX_DELIMITERS.sub("", _TEX_COMMAND.sub(character, text))
+
+
+class _WithoutAsides(HTMLParser):
+    """An HTML page's text with its asides left out, a space where each tag was."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        # How deep inside an aside the parser is. Nothing is kept while it is not zero.
+        self.inside = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.parts.append(" ")
+        if tag in _VOID:
+            return
+        classes = (dict(attrs).get("class") or "").split()
+        if self.inside or tag in _ASIDE_ELEMENTS or _ASIDE_CLASSES.intersection(classes):
+            self.inside += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        self.parts.append(" ")
+        if self.inside and tag not in _VOID:
+            self.inside -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self.inside:
+            self.parts.append(data)
+
+
+def _without_asides(served: str) -> str:
+    """A page's text without footnotes, screen-reader text and what a link says of itself.
+
+    An aside left open is ended by whatever closes next, so this reading can lose or keep a
+    few words it should not. That makes it shorter or longer and never decisive: a passage is
+    looked for in every reading, and found in any one of them.
+    """
+    parser = _WithoutAsides()
+    try:
+        parser.feed(served)
+        parser.close()
+    except (ValueError, AssertionError, RecursionError):
+        return ""
+    return _ANNOUNCED.sub(" ", "".join(parser.parts))
+
+
 def _strings(value: object) -> list[str]:
     """Every string value in a parsed JSON document, in document order.
 
@@ -143,8 +291,9 @@ def _from_xml(body: bytes) -> Extracted:
     """
     text = _TAG.sub(" ", _CDATA.sub(r" \1 ", body.decode("utf-8", errors="replace")))
     second = _TAG.sub(" ", html.unescape(text)) if "&lt;" in text else ""
+    plain = _without_tex_type(text)
     return Extracted(
-        text, XML, by="retrieved.extract/xml", second=f"{second}\n{_without_tex_type(text)}"
+        text, XML, by="retrieved.extract/xml", second=f"{second}\n{plain}\n{_tex_rendered(text)}"
     )
 
 
@@ -226,7 +375,8 @@ def _from_pdf(body: bytes) -> Extracted:
 
 def _second_html(retrieval: Retrieval) -> str:
     """More readings of an HTML page: without its formulas' TeX, without TeX that sets type,
-    and as served.
+    with its TeX written as the characters it renders to, without footnotes and text meant
+    for a screen reader, and as served.
 
     As served, because the fetch tool reads more of a page than its visible text. An image's
     `alt`, a `meta` description and a document's title in a script are all words the page holds
@@ -234,7 +384,10 @@ def _second_html(retrieval: Retrieval) -> str:
     """
     served = retrieval.body.decode("utf-8", errors="replace")
     plain = normalize(_ANNOTATION.sub(" ", served).encode(), retrieval.content_type)
-    return f"{plain}\n{_without_tex_type(plain)}\n{served}"
+    return (
+        f"{plain}\n{_without_tex_type(plain)}\n{_tex_rendered(plain)}\n"
+        f"{_without_asides(served)}\n{served}"
+    )
 
 
 def extract(retrieval: Retrieval) -> Extracted:
