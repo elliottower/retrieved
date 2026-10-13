@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "retrieved"
-version = "0.1.0"
+version = "0.2.0"
 description = "Keep the bytes an agent fetched, so a claim about a page can be checked against the page."
 readme = "README.md"
 license = "MIT"

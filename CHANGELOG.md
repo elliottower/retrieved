@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - The hook checks the fetch tool's answer against the page it retrieved. Passages the answer puts
   in quotation marks are looked for in the page's text, and the record gains an `answer_check`
