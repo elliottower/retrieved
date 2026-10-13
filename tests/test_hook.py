@@ -253,14 +253,19 @@ def test_a_long_answer_over_a_login_wall_writes_the_other_flag(home, monkeypatch
     assert flag["page_text_chars"] == len("Sign in Please sign in to continue.")
 
 
-def test_a_pdf_is_recorded_as_not_checked_and_raises_nothing(home, monkeypatch, capsys):
+def test_a_pdf_nothing_can_read_is_recorded_as_not_checked_and_raises_nothing(
+    home, monkeypatch, capsys
+):
     payload = fetched("https://example.com/timetable.pdf", NOT_ON_THE_PAGE)
     body = b"%PDF-1.7 " + bytes(range(256)) * 8
     assert capture_in_process(monkeypatch, payload, body=body, ctype="application/pdf") == 0
     assert capsys.readouterr() == ("", "")
     block = the_record(home)["answer_check"]
     assert block["status"] == "not_run"
-    assert "application/pdf" in block["reason"]
+    # No extractor installed, or one that could not read these bytes: either way a reason
+    # that names the extractor, and never a passage reported missing.
+    assert "pdftotext" in block["reason"]
+    assert block["not_found"] == []
     assert not (home / "flags.jsonl").exists()
 
 
