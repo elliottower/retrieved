@@ -69,6 +69,27 @@ Pages the agent fetches are then captured as a byproduct of ordinary work, with 
 author. The capturing hook never blocks a fetch — `PostToolUse` cannot — and never prints, because
 a hook that speaks on every fetch gets uninstalled. Refusals land in `skipped.jsonl`.
 
+### Keeping the record without the page
+
+By default every page the hook fetches is stored. `RETRIEVED_KEEP` in the hook's command changes
+that:
+
+| `RETRIEVED_KEEP` | bytes stored |
+|---|---|
+| `all` (default) | every page |
+| `flagged` | only a page whose answer quoted a passage the page does not hold |
+| `none` | no page |
+
+    "command": "RETRIEVED_KEEP=flagged retrieved-hook"
+
+The record is written whichever it is: the URL, the time, the status, the length, both digests
+and the check of the answer, with `bytes_kept: false` where the page was not stored. That is
+enough to say later whether the page still reads the same, and to show which passage of an
+answer was not on it. It is not enough to read the page again, and it costs one thing more: a
+URL fetched twice within fifteen minutes is checked against the stored copy, and where no copy
+was kept the second answer is not checked. A value that is none of the three keeps every page.
+`retrieved capture` always keeps the bytes.
+
 ## Checking the answer
 
 The capture has the page and the hook payload has the answer, so the one can be checked against

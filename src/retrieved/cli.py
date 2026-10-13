@@ -103,11 +103,15 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"  no library at {library.root}")
         return 2
 
-    checked = intact = missing = altered = 0
+    checked = intact = missing = altered = not_kept = 0
     for record in sorted(library.retrievals.glob("*.yaml")):
         checked += 1
         digest = record.stem
         blob = library.store / digest
+        if not blob.is_file() and library.kept_no_bytes(record):
+            # Never stored, by the setting the capture was made under. Not a thing gone.
+            not_kept += 1
+            continue
         if not blob.is_file():
             missing += 1
             print(f"  missing  {digest[:16]}  bytes are gone; the record remains")
@@ -118,7 +122,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
             continue
         intact += 1
 
-    print(f"\n  {checked} retrievals   {intact} intact   {missing} missing   {altered} altered")
+    print(
+        f"\n  {checked} retrievals   {intact} intact   {missing} missing   {altered} altered"
+        f"   {not_kept} recorded without bytes"
+    )
     # Missing is not failure: a takedown removes bytes and keeps the record, deliberately.
     return 1 if altered else 0
 

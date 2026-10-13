@@ -380,3 +380,29 @@ def test_records_with_and_without_an_answer_check_verify_and_promote_alike(
     assert cli.main(["promotable"]) == 0
     assert "2 of 2 retrievals name a work" in capsys.readouterr().out
     assert cli.main(["promote", r.bytes_sha256, "--into", str(tmp_path / "citations")]) == 0
+
+
+def test_verify_counts_a_record_kept_without_bytes_apart_from_bytes_that_are_gone(
+    home, monkeypatch, capsys
+):
+    library = Library.resolve().create()
+
+    def page(n):
+        def handler(request):
+            return httpx.Response(
+                200, content=f"<p>page {n}</p>".encode(), headers={"content-type": "text/html"}
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as c:
+            return capture.fetch(f"https://example.com/{n}", client=c)
+
+    library.write(page(1))
+    library.write(page(2), keep_bytes=False)
+    gone = page(3)
+    library.write(gone)
+    (library.store / gone.bytes_sha256).unlink()
+
+    assert cli.main(["verify"]) == 0
+    out = capsys.readouterr().out
+    assert "3 retrievals   1 intact   1 missing   0 altered   1 recorded without bytes" in out
+    assert out.count("bytes are gone") == 1
