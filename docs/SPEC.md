@@ -29,6 +29,12 @@ that a passage in it supports anything.
 | `prompt` | what the agent was asking of the page. Not a quotation |
 | `session_id` | which agent session caused the capture |
 | `note` | states in the record itself that this is an independent retrieval |
+| `answer_check` | optional. Whether the passages the fetch tool's answer quoted are in this retrieval's text: `found`, `not_found` with the passages, or `not_run` with a reason. Holds the answer's digest, never the answer |
+
+`answer_check` is a statement about containment and nothing more. `found` means the quoted words
+are in these bytes, not that the page supports what the answer made of them, and `not_found`
+means they are not in this retrieval, which is not necessarily the page the fetch tool read. A
+record without the block was never checked.
 
 ## Two digests
 

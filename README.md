@@ -45,6 +45,7 @@ Takes the URL, fetches it again independently, and keeps what came back.
       retrievals/<bytes_sha256>.yaml  url, both digests, status, headers, when
       index.db                        one row per retrieval
       skipped.jsonl                   what was not captured, and why
+      flags.jsonl                     answers that did not match the page they were about
 ```
 
 **Two digests, because one is useless.** HTML changes on every request — session ids, CSRF
@@ -64,8 +65,57 @@ retrieved hook            # prints the config; add it to ~/.claude/settings.json
 ```
 
 Pages the agent fetches are then captured as a byproduct of ordinary work, with no manifest to
-author. The hook never blocks a fetch — `PostToolUse` cannot — and never prints, because a hook
-that speaks on every fetch gets uninstalled. Refusals land in `skipped.jsonl`.
+author. The capturing hook never blocks a fetch — `PostToolUse` cannot — and never prints, because
+a hook that speaks on every fetch gets uninstalled. Refusals land in `skipped.jsonl`.
+
+## Checking the answer
+
+The capture has the page and the hook payload has the answer, so the one can be checked against
+the other. Passages the answer puts in double quotation marks, thirty characters or longer, are
+looked for in the text of the page as retrieved.
+
+```text
+  answer:  The docs say "requests are retried three times before failing."
+  page:    ...requests are retried twice before failing, and the error is...
+
+  retrieved: 1 passage the fetch answer quoted from https://example.com/docs is not in the
+  page as retrieved: "requests are retried three times before failing.". Read the page before
+  quoting it. The page was fetched again, independently, and a second fetch can differ from
+  what the fetch tool read.
+```
+
+The comparison ignores what typesetting adds and keeps which words appear: case, curly against
+straight marks, the several dashes, HTML entities, soft hyphens and runs of whitespace are folded
+on both sides, and a full stop or comma closing the quotation is not held against it. A passage
+with an ellipsis or square brackets was edited by whoever quoted it, and is not checked.
+
+Every record written by the hook says which of three things happened, under `answer_check`:
+
+| `status` | meaning |
+|---|---|
+| `found` | every quoted passage is in the page |
+| `not_found` | some are not; the record lists them |
+| `not_run` | nothing was checked, and `reason` says why |
+
+`not_run` is not a pass. A PDF is not text this library extracts; a truncated page would report
+its last passages missing; a page with almost no text is a wall or a shell, not the article; and
+an answer with no quotation in it leaves nothing to look for. A record with no `answer_check` at
+all predates the check or was captured by hand.
+
+One more thing is measured, separately from quotations: an answer of 800 characters or more over
+a page holding fewer than 400 characters of text. That is a login wall, an error page or an
+unrendered shell, and the answer did not come from it. It is recorded as
+`answer_without_page_text` and never as a quotation that failed.
+
+A mismatch is appended to `flags.jsonl`. The second entry `retrieved hook` prints,
+`retrieved-hook --report`, hands it to the agent once, on the next tool call that session makes,
+and prints nothing on every other call. Without that entry the check still runs and is recorded;
+`retrieved status` counts what was flagged.
+
+What this does not catch is most of what can go wrong. A paraphrase that changes the meaning has
+no quotation marks around it, and neither does anything else the answer says in its own words. A
+quotation the page does hold can still be quoted against its sense. And the page is this library's
+retrieval, so a passage reported missing may have been on the page the fetch tool read.
 
 ## What it refuses to fetch
 
