@@ -34,6 +34,7 @@ import yaml
 from retrieved.answer import FOUND, NOT_FOUND, NOT_RUN, AnswerCheck
 from retrieved.capture import Retrieval
 from retrieved.flags import FLAGS_NAME, library_root
+from retrieved.wall import recognise
 
 CHECKS_NAME = "answer_checks.jsonl"
 
@@ -144,6 +145,11 @@ class Library:
                 "fetched_at, not necessarily the bytes any agent saw."
             ),
         }
+        # Present only where the page said it was one. A status of 200 over a check on the
+        # browser reads as a capture of the article to everything that looks at the status
+        # alone, and this is the one place a capture made by hand can say otherwise.
+        if wall := recognise(retrieval):
+            record["wall"] = wall
         # Present only where there was an answer to check: a capture made by hand has none. So a
         # record without the block was never checked, which is a third thing beside "checked" and
         # "could not be checked", and every record written before the check existed says it too.
@@ -364,15 +370,18 @@ class Library:
     def survey(self) -> dict[str, int]:
         """What the records say of the answer check, in one pass over them.
 
-        `ran`, `not_run` and `absent` count records. `longer_than_page` counts answers recorded
+        `ran`, `not_run` and `absent` count records, and `walls` counts the records of pages
+        that said they were one, checked or not. `longer_than_page` counts answers recorded
         as `answer_without_page_text`, in records and in `answer_checks.jsonl` alike: a thing
         measured and kept, and not a flag. A record that cannot be read counts as absent: this
         is a survey, and one damaged file must not end it.
         """
-        counts = {"ran": 0, "not_run": 0, "absent": 0, "longer_than_page": 0}
+        counts = {"ran": 0, "not_run": 0, "absent": 0, "longer_than_page": 0, "walls": 0}
         for path in self.retrievals.glob("*.yaml"):
             try:
-                block = yaml.safe_load(path.read_text()).get("answer_check")
+                record = yaml.safe_load(path.read_text())
+                counts["walls"] += bool(record.get("wall"))
+                block = record.get("answer_check")
                 status = block.get("status")
             except (OSError, ValueError, yaml.YAMLError, AttributeError):
                 counts["absent"] += 1

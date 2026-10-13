@@ -36,6 +36,7 @@ from dataclasses import dataclass
 
 from retrieved.capture import MAX_BYTES, Retrieval
 from retrieved.extract import HTML, PDF, TEXT, extract
+from retrieved.wall import recognise
 
 #: Shorter than this and a quoted string is a term, a title or a label rather than a passage, and
 #: a few words can occur on a page by accident where a sentence cannot.
@@ -376,15 +377,22 @@ def check(
         "checked_against": extracted.by,
     }
 
-    if about_the_page["page_text_chars"] < SPARSE_PAGE_CHARS:
+    # A wall served with success is not the page either, and unlike a page that is merely short
+    # it can run to a thousand characters of its own. Its reason is its own: "too few
+    # characters" would be true of most walls and would say nothing of what was met.
+    wall = recognise(retrieval)
+    if wall or about_the_page["page_text_chars"] < SPARSE_PAGE_CHARS:
         return AnswerCheck(
             NOT_RUN,
-            reason=f"the page holds {about_the_page['page_text_chars']} characters of text, "
+            reason=f"the independent fetch met {wall}, which is not the page the tool read"
+            if wall
+            else f"the page holds {about_the_page['page_text_chars']} characters of text, "
             f"too few to check against",
             # Only where the page is prose. A JSON document of numbers and a PDF whose text
             # layer is thin are short for reasons that say nothing about where the answer
             # came from.
             answer_without_page_text=extracted.kind in (HTML, TEXT)
+            and about_the_page["page_text_chars"] < SPARSE_PAGE_CHARS
             and len(answer) >= LONG_ANSWER_CHARS,
             **about_the_page,
             **about_the_answer,

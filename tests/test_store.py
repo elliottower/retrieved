@@ -301,5 +301,11 @@ def test_answers_longer_than_their_pages_text_are_counted_wherever_they_were_rec
     library.checked_stored(r, check(long, r), declined="captured 12s ago")
     article = a_retrieval(ARTICLE)
     library.write(article, answer_check=check(long, article))
-    assert library.survey() == {"ran": 0, "not_run": 3, "absent": 0, "longer_than_page": 3}
+    assert library.survey() == {
+        "ran": 0,
+        "not_run": 3,
+        "absent": 0,
+        "longer_than_page": 3,
+        "walls": 2,
+    }
     assert not library.flags_path.exists()

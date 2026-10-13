@@ -21,7 +21,7 @@ import hashlib
 import json
 import pathlib
 
-from retrieved import flags, politeness
+from retrieved import flags, politeness, wall
 from retrieved.capture import USER_AGENT, fetch
 from retrieved.promote import CannotPromote, candidates, promote
 from retrieved.refuse import Refused
@@ -90,6 +90,10 @@ def cmd_capture(args: argparse.Namespace) -> int:
     print(f"    bytes  {retrieval.bytes_sha256[:16]}")
     print(f"    text   {retrieval.text_sha256[:16]}   {retrieval.extractor}")
     print(f"    record {path.relative_to(library.root.parent)}")
+    if met := wall.recognise(retrieval):
+        # Said here because nothing above does: the status is a success and the bytes are kept.
+        print(f"    wall   {met}")
+        print("           this is not the page at that address")
     return 0
 
 
@@ -154,6 +158,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"            {surveyed['longer_than_page']} answers recorded as longer than their "
         f"page's text   (recorded only, never flagged)"
     )
+    # Of all captures, checked or not. A wall is a capture that holds the server's refusal.
+    print(f"  walls     {surveyed['walls']}   (recorded as served with success and not the page)")
     if drifted:
         print(f"\n  {len(drifted)} URLs read differently on a later fetch:")
         for url, fetches, readings in drifted[:10]:
