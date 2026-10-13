@@ -29,12 +29,48 @@ that a passage in it supports anything.
 | `prompt` | what the agent was asking of the page. Not a quotation |
 | `session_id` | which agent session caused the capture |
 | `note` | states in the record itself that this is an independent retrieval |
-| `answer_check` | optional. Whether the passages the fetch tool's answer quoted are in this retrieval's text: `found`, `not_found` with the passages, or `not_run` with a reason. Holds the answer's digest, never the answer |
+| `answer_check` | optional. Whether the passages the fetch tool's answer quoted are in this retrieval's text: `found`, `not_found` with the passages, or `not_run` with a reason. Holds the answer's digest, never the answer. `checked_against` names what produced the text they were looked for in |
 
 `answer_check` is a statement about containment and nothing more. `found` means the quoted words
 are in these bytes, not that the page supports what the answer made of them, and `not_found`
 means they are not in this retrieval, which is not necessarily the page the fetch tool read. A
 record without the block was never checked.
+
+`checked_against` is not `extractor`. `extractor` names the normalisation `text_sha256` is taken
+over, which decodes a PDF's bytes as they are and must never change. `checked_against` names
+what the answer's passages were looked for in, which for a PDF is the output of `pdftotext` and
+for JSON is its parsed string values. The first answers whether a page changed, the second
+whether a sentence is in it, and a record carries both.
+
+## Checks against a copy already held
+
+A record is the account of one fetch, and its `answer_check` is the check of the answer that
+fetch was made for. An answer about a URL the rate limiter declined has no fetch of its own.
+Where the library holds an earlier copy, that answer is checked against it and the outcome is one
+line of `answer_checks.jsonl`:
+
+| field | what it is for |
+|---|---|
+| `at` | when the check was made |
+| `session_id`, `agent_id` | whose fetch it was |
+| `url` | what was asked for |
+| `bytes_sha256` | which copy the answer was checked against |
+| `copy_fetched_at` | when that copy was fetched, which is not when the answer was given |
+| `not_fetched_because` | the rate limiter's reason, as in `skipped.jsonl`, where no request was made |
+| `same_bytes_fetched_at` | when a request was made and returned the bytes the record already names. One of this and the field above is set |
+| `answer_check` | the same block a record carries |
+
+The file is append-only. Several answers checked against one copy are several lines, and a
+record that carries a check is never rewritten: not by a check against it, and not by a later
+fetch that returns the same bytes. The index row is replaced by that fetch, so the index gives
+the last time the bytes came back and the record the first.
+
+## What is told, and what is only recorded
+
+`flags.jsonl` holds one thing: an answer that quoted a passage the page does not hold.
+`answer_without_page_text` is recorded in the block and never flagged. A second fetch that came
+back with an error status is `not_run`, whatever the answer said, and no passage is looked for
+in an error page.
 
 ## Two digests
 

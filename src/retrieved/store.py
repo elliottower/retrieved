@@ -12,6 +12,7 @@ already right: bytes addressed by their digest.
         index.db                      one row per retrieval, so questions are queries
         skipped.jsonl                 what was not captured, and why
         flags.jsonl                   answers that did not match the page they were about
+        answer_checks.jsonl           answers checked against a copy already held
 
 `skipped.jsonl` is not an afterthought. A capture refused by the denylist or a rate limit is a
 thing that did not happen, and a store that records only successes reports the same silence for
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import hashlib
 import json
 import pathlib
 import sqlite3
@@ -32,6 +34,8 @@ import yaml
 from retrieved.answer import FOUND, NOT_FOUND, NOT_RUN, AnswerCheck
 from retrieved.capture import Retrieval
 from retrieved.flags import FLAGS_NAME, library_root
+
+CHECKS_NAME = "answer_checks.jsonl"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS retrievals (
@@ -63,6 +67,7 @@ class Library:
         self.index_path = root / "index.db"
         self.skipped_path = root / "skipped.jsonl"
         self.flags_path = root / FLAGS_NAME
+        self.checks_path = root / CHECKS_NAME
 
     @classmethod
     def resolve(cls, start: pathlib.Path | None = None) -> Library:
@@ -99,12 +104,22 @@ class Library:
         retrieval: Retrieval,
         *,
         session_id: str = "",
+        agent_id: str = "",
         prompt: str = "",
         answer_check: AnswerCheck | None = None,
     ) -> pathlib.Path:
-        """Store the bytes and the record, and index the row. Returns the record's path."""
+        """Store the bytes and the record, and index the row. Returns the record's path.
+
+        A record is named by its bytes, so a later fetch that returns the same bytes names the
+        same file. Where that file already holds the check of an earlier answer it is left as
+        it is, and this answer's check is appended to `answer_checks.jsonl` beside when the
+        bytes came back again. The index row is still replaced, because pacing and `latest`
+        need the time of the most recent fetch.
+        """
         self.create()
         (self.store / retrieval.bytes_sha256).write_bytes(retrieval.body)
+        path = self.retrievals / f"{retrieval.bytes_sha256}.yaml"
+        earlier = self._checked_record(path)
 
         record = {
             "url": retrieval.url,
@@ -134,8 +149,17 @@ class Library:
         # "could not be checked", and every record written before the check existed says it too.
         if answer_check is not None:
             record["answer_check"] = answer_check.as_record()
-        path = self.retrievals / f"{retrieval.bytes_sha256}.yaml"
-        path.write_text(yaml.safe_dump(record, sort_keys=False, allow_unicode=True))
+        if earlier is None:
+            path.write_text(yaml.safe_dump(record, sort_keys=False, allow_unicode=True))
+        elif answer_check is not None:
+            self._append_check(
+                retrieval,
+                answer_check,
+                copy_fetched_at=earlier.get("fetched_at"),
+                same_bytes_fetched_at=retrieval.fetched_at,
+                session_id=session_id,
+                agent_id=agent_id,
+            )
 
         with self.connect() as db:
             db.execute(
@@ -160,11 +184,161 @@ class Library:
                 json.dumps({"url": url, "reason": reason, "session_id": session_id}) + "\n"
             )
 
-    def flag(self, retrieval: Retrieval, check: AnswerCheck, *, session_id: str = "") -> None:
+    @staticmethod
+    def _checked_record(path: pathlib.Path) -> dict | None:
+        """The record at a path where it already carries an answer's check, else None.
+
+        None for a file that is absent, unreadable or has no check: there is nothing in any of
+        those that writing over would lose.
+        """
+        try:
+            record = yaml.safe_load(path.read_text())
+        except (OSError, ValueError, yaml.YAMLError):
+            return None
+        return record if isinstance(record, dict) and "answer_check" in record else None
+
+    def _append_check(
+        self,
+        copy: Retrieval,
+        check: AnswerCheck,
+        *,
+        copy_fetched_at: object,
+        not_fetched_because: str | None = None,
+        same_bytes_fetched_at: str | None = None,
+        session_id: str = "",
+        agent_id: str = "",
+    ) -> None:
+        """One line of `answer_checks.jsonl`: an answer checked against a copy already held."""
+        self.create()
+        with self.checks_path.open("a") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "url": copy.url,
+                        # Which copy, and when it was fetched: what this check is a check of.
+                        "bytes_sha256": copy.bytes_sha256,
+                        "copy_fetched_at": copy_fetched_at,
+                        # One of these two is set. Either no request was made, and this is why;
+                        # or one was, and it returned the bytes the record already names.
+                        "not_fetched_because": not_fetched_because,
+                        "same_bytes_fetched_at": same_bytes_fetched_at,
+                        "answer_check": check.as_record(),
+                    }
+                )
+                + "\n"
+            )
+
+    def latest(self, url: str) -> Retrieval | None:
+        """The most recent stored retrieval of a URL, bytes and all, or None where none reads.
+
+        Newest first, and the first whose record parses and whose bytes still hash to their
+        name. A record whose bytes were removed on request, or altered, is passed over for the
+        one before it: this is asked in order to check an answer against the bytes, and bytes
+        that are not what the record says are no evidence of anything.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT bytes_sha256, fetched_at FROM retrievals WHERE url = ? OR final_url = ? "
+                "ORDER BY fetched_at DESC",
+                (url, url),
+            ).fetchall()
+        # The time is the index's, which is the last time a fetch returned these bytes. The
+        # record keeps the first, and the two differ where a page was fetched twice unchanged.
+        for digest, fetched_at in rows:
+            try:
+                record = yaml.safe_load((self.retrievals / f"{digest}.yaml").read_text())
+                body = (self.store / digest).read_bytes()
+                if hashlib.sha256(body).hexdigest() != digest:
+                    continue
+                return Retrieval(
+                    url=record["url"],
+                    final_url=record["final_url"],
+                    fetched_at=fetched_at,
+                    http_status=record["http_status"],
+                    content_type=record["content_type"],
+                    bytes_len=len(body),
+                    bytes_sha256=digest,
+                    text_sha256=record["text_sha256"],
+                    extractor=record["extractor"],
+                    rendering_method=record["rendering_method"],
+                    javascript_executed=record["javascript_executed"],
+                    response_headers=record.get("response_headers") or {},
+                    body=body,
+                    truncated=bool(record.get("truncated")),
+                )
+            except (OSError, ValueError, yaml.YAMLError, KeyError, TypeError):
+                continue
+        return None
+
+    def checked_stored(
+        self,
+        copy: Retrieval,
+        check: AnswerCheck,
+        *,
+        declined: str,
+        session_id: str = "",
+        agent_id: str = "",
+    ) -> None:
+        """Record an answer checked against a copy already held, not a new fetch. Append only.
+
+        Not written into the copy's own record. That record is the account of one fetch and
+        carries the check of the answer that fetch was made for; this is a later answer, about
+        a page that was not requested again, and writing it there would replace the earlier
+        check or leave a record saying two things about one event. One line a check, so several
+        answers checked against one copy are several lines and none is lost.
+        """
+        self._append_check(
+            copy,
+            check,
+            copy_fetched_at=copy.fetched_at,
+            not_fetched_because=declined,
+            session_id=session_id,
+            agent_id=agent_id,
+        )
+
+    def _appended_checks(self) -> list[dict]:
+        """The `answer_check` block of each line of `answer_checks.jsonl` that has one."""
+        try:
+            lines = self.checks_path.read_text().splitlines()
+        except (OSError, UnicodeDecodeError):
+            return []
+        blocks = []
+        for line in lines:
+            try:
+                block = json.loads(line)["answer_check"]
+            except (ValueError, KeyError, TypeError):
+                continue
+            if isinstance(block, dict):
+                blocks.append(block)
+        return blocks
+
+    def stored_checks(self) -> tuple[int, int]:
+        """How many answers were checked against a copy already held: ran, and did not run.
+
+        Counted apart from `answer_checks`, which counts records. A damaged line is passed over.
+        """
+        statuses = [block.get("status") for block in self._appended_checks()]
+        ran = sum(status in (FOUND, NOT_FOUND) for status in statuses)
+        return ran, statuses.count(NOT_RUN)
+
+    def flag(
+        self,
+        retrieval: Retrieval,
+        check: AnswerCheck,
+        *,
+        session_id: str = "",
+        agent_id: str = "",
+        stored_copy: bool = False,
+    ) -> None:
         """Record an answer that did not match the page it was about. Append only.
 
         One line carries everything the note to the agent is built from, so the hook that
-        delivers it reads this file and nothing else.
+        delivers it reads this file and nothing else. `stored_copy` says the retrieval is one
+        the library already held, and the line then carries when it was fetched, which the
+        note has to say.
         """
         self.create()
         with self.flags_path.open("a") as handle:
@@ -173,8 +347,10 @@ class Library:
                     {
                         "at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
                         "session_id": session_id,
+                        "agent_id": agent_id,
                         "url": retrieval.url,
                         "bytes_sha256": retrieval.bytes_sha256,
+                        "copy_fetched_at": retrieval.fetched_at if stored_copy else None,
                         "http_status": retrieval.http_status,
                         "not_found": check.as_record()["not_found"],
                         "answer_without_page_text": check.answer_without_page_text,
@@ -185,27 +361,37 @@ class Library:
                 + "\n"
             )
 
-    def answer_checks(self) -> tuple[int, int, int]:
-        """How many records had the answer check run, not run, and not recorded at all.
+    def survey(self) -> dict[str, int]:
+        """What the records say of the answer check, in one pass over them.
 
-        A record that cannot be read counts with the last: this is a survey, and one damaged
-        file must not end it.
+        `ran`, `not_run` and `absent` count records. `longer_than_page` counts answers recorded
+        as `answer_without_page_text`, in records and in `answer_checks.jsonl` alike: a thing
+        measured and kept, and not a flag. A record that cannot be read counts as absent: this
+        is a survey, and one damaged file must not end it.
         """
-        ran = not_run = absent = 0
+        counts = {"ran": 0, "not_run": 0, "absent": 0, "longer_than_page": 0}
         for path in self.retrievals.glob("*.yaml"):
             try:
                 block = yaml.safe_load(path.read_text()).get("answer_check")
                 status = block.get("status")
             except (OSError, ValueError, yaml.YAMLError, AttributeError):
-                absent += 1
+                counts["absent"] += 1
                 continue
             if status == NOT_RUN:
-                not_run += 1
+                counts["not_run"] += 1
             elif status in (FOUND, NOT_FOUND):
-                ran += 1
+                counts["ran"] += 1
             else:
-                absent += 1
-        return ran, not_run, absent
+                counts["absent"] += 1
+            counts["longer_than_page"] += block.get("answer_without_page_text") is True
+        for block in self._appended_checks():
+            counts["longer_than_page"] += block.get("answer_without_page_text") is True
+        return counts
+
+    def answer_checks(self) -> tuple[int, int, int]:
+        """How many records had the answer check run, not run, and not recorded at all."""
+        counts = self.survey()
+        return counts["ran"], counts["not_run"], counts["absent"]
 
     def history(self, url: str) -> list[tuple[str, str, str]]:
         """Every retrieval of a URL: when, and both digests. This is what an index buys."""

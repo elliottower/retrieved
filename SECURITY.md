@@ -49,6 +49,19 @@ the fetch tool's answer, which the agent has already been given. It never carrie
 stored page: the page is untrusted input, and a hook that quoted it would be a second route for
 whatever the page was trying to say.
 
+A note about a check made against a stored copy also carries the time that copy was fetched. The
+time is parsed and written out again by the hook, so a value in `flags.jsonl` that is not a
+timestamp never reaches the agent as text.
+
+## The PDF extractor
+
+Checking an answer against a PDF runs `pdftotext` on bytes a remote server chose, which is a
+parser run on untrusted input. It is run by its resolved path with fixed arguments and no shell,
+on a temporary file that is removed afterwards, with a timeout of twenty seconds, by the detached
+worker and never by the hook a session waits on. Its output is compared and counted; none of it
+is stored or shown to the agent. Keep poppler patched, or leave it uninstalled: without it a PDF
+is recorded as not checked and nothing else changes.
+
 ## Reporting
 
 Open a GitHub security advisory on the repository. Do not open a public issue for a vulnerability
