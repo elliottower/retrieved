@@ -46,6 +46,7 @@ Takes the URL, fetches it again independently, and keeps what came back.
       index.db                        one row per retrieval
       skipped.jsonl                   what was not captured, and why
       flags.jsonl                     answers that did not match the page they were about
+      answer_checks.jsonl             answers checked against a copy already held
 ```
 
 **Two digests, because one is useless.** HTML changes on every request — session ids, CSRF
@@ -71,8 +72,8 @@ a hook that speaks on every fetch gets uninstalled. Refusals land in `skipped.js
 ## Checking the answer
 
 The capture has the page and the hook payload has the answer, so the one can be checked against
-the other. Passages the answer puts in double quotation marks, thirty characters or longer, are
-looked for in the text of the page as retrieved.
+the other. Passages the answer puts in double quotation marks or in a markdown block quote,
+thirty characters or longer, are looked for in the text of the page as retrieved.
 
 ```text
   answer:  The docs say "requests are retried three times before failing."
@@ -89,6 +90,35 @@ straight marks, the several dashes, HTML entities, soft hyphens and runs of whit
 on both sides, and a full stop or comma closing the quotation is not held against it. A passage
 with an ellipsis or square brackets was edited by whoever quoted it, and is not checked.
 
+A passage that comparison misses is looked for once more with spaces, quotation marks and
+markdown's emphasis marks removed from both sides. A tag inside a word (`keeper<b>s</b>`) reads
+as a space on the page, the fetch tool reads `<em>` as `_`, and an answer nesting a quotation
+writes single marks where the page has double. Letters, digits, full stops and minus signs stay,
+so no other word or number gets through. What is given up is word boundaries, over thirty
+characters or more.
+
+Three kinds of quoted string are not looked for at all, because none is a claim about the page:
+words that are in the prompt (a title the agent asked after, or the whole prompt repeated in the
+fetch tool's notice of a redirect), an attribute's value in markup the answer reproduces
+(`alt="..."`), and a block quote that holds a heading, a list or a table.
+
+What the page's text is depends on what the page is, and the record names it under
+`checked_against`:
+
+| page | checked against | `checked_against` |
+|---|---|---|
+| HTML | its text with tags removed, and the bytes as served | `retrieved.normalize/html` |
+| `text/*` | the text as it is | `retrieved.normalize/raw` |
+| JSON | its string values, parsed, so `\"` and `\u2019` are the characters | `retrieved.extract/json` |
+| XML, Atom | its text with tags removed | `retrieved.extract/xml` |
+| PDF | what `pdftotext` extracts, where it is installed | `pdftotext 24.02.0` |
+
+`pdftotext` is part of poppler (`brew install poppler`, `apt install poppler-utils`). It is run
+without `-layout`, in reading order, on the stored bytes, with a timeout. It rejoins a word
+hyphenated across a line end by dropping the hyphen, so for a PDF a hyphen between two letters
+is ignored on both sides. None of this changes `text_sha256` or the record's `extractor`, which
+describe the capture and not the check.
+
 Every record written by the hook says which of three things happened, under `answer_check`:
 
 | `status` | meaning |
@@ -97,25 +127,63 @@ Every record written by the hook says which of three things happened, under `ans
 | `not_found` | some are not; the record lists them |
 | `not_run` | nothing was checked, and `reason` says why |
 
-`not_run` is not a pass. A PDF is not text this library extracts; a truncated page would report
-its last passages missing; a page with almost no text is a wall or a shell, not the article; and
-an answer with no quotation in it leaves nothing to look for. A record with no `answer_check` at
-all predates the check or was captured by hand.
+`not_run` is not a pass. A PDF with no `pdftotext` installed, one it could not read or did not
+finish in twenty seconds, and one with no text layer are each `not_run` with that as the reason,
+and never a passage reported missing. So are JSON that does not parse, a ZIP or an image, a
+truncated page, which would report its last passages missing, a page with almost no text, which
+is a wall or a shell and not the article, and an answer with no quotation in it. A record with no
+`answer_check` at all predates the check or was captured by hand.
 
 One more thing is measured, separately from quotations: an answer of 800 characters or more over
-a page holding fewer than 400 characters of text. That is a login wall, an error page or an
-unrendered shell, and the answer did not come from it. It is recorded as
+an HTML or plain-text page holding fewer than 400 characters of text. That is a login wall, an
+error page or an unrendered shell, and the answer did not come from it. It is recorded as
 `answer_without_page_text` and never as a quotation that failed.
+
+**A URL the rate limiter declines** is not fetched, and the answer is still there. Where the
+library already holds a copy of that URL, the answer is checked against the most recent copy
+with no request made. The outcome is one line of `answer_checks.jsonl`, with the digest of the
+copy, when it was fetched and why no request was made. The copy's own record is not touched: it
+is the account of the earlier fetch and keeps the check of the earlier answer. A note raised this
+way says so:
+
+```text
+  retrieved: 1 passage the fetch answer quoted from https://example.com/docs is not in the copy
+  of the page this library holds, fetched 2026-10-13T15:02:11+00:00: "...". Read the page before
+  quoting it. The page was not fetched again for this check: the copy is from
+  2026-10-13T15:02:11+00:00, and it can differ from what the fetch tool read.
+```
+
+Where the library holds no copy, the line in `skipped.jsonl` is the whole record and nothing is
+checked. `retrieved status` counts these checks on a line of their own.
 
 A mismatch is appended to `flags.jsonl`. The second entry `retrieved hook` prints,
 `retrieved-hook --report`, hands it to the agent once, on the next tool call that session makes,
 and prints nothing on every other call. Without that entry the check still runs and is recorded;
 `retrieved status` counts what was flagged.
 
+**Subagents.** A subagent's fetch runs the same hooks, with the session's `session_id` and an
+`agent_id` of its own. A flag records that `agent_id`. A subagent is told about flags its own
+fetches raised and no others; the main agent is told about its own and any subagent's, and a
+note about a subagent's fetch ends `The fetch was made by a subagent of this session.` Whichever
+of the two calls a tool first is told. A subagent whose fetch was its last tool call has
+finished before the check has, so the main agent is the only reader left for that flag.
+
 What this does not catch is most of what can go wrong. A paraphrase that changes the meaning has
 no quotation marks around it, and neither does anything else the answer says in its own words. A
 quotation the page does hold can still be quoted against its sense. And the page is this library's
 retrieval, so a passage reported missing may have been on the page the fetch tool read.
+
+Single quotation marks are not read. The apostrophe is the same character, so `the page's 'first'
+and the keeper's` pairs wherever the next one falls, and a passage quoted that way is not checked.
+A quotation whose words are also in the prompt is not checked either, including one the answer
+attributes to the page.
+
+What it gets wrong, in the other direction, is a passage the answer reproduced faithfully from a
+page that writes it another way. A formula is the common case: an arXiv listing or feed carries
+`$\rho = 0.19$` as TeX, the answer writes `ρ = 0.19`, and the passage is reported missing. Text a
+page hides from sight and keeps in its markup (`opens in new tab`) is another. An answer that
+drops a citation or a parenthesis from the middle of a quotation without marking the cut is
+reported too, and there the report is right: those words in that order are not on the page.
 
 ## What it refuses to fetch
 
